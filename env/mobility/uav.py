@@ -110,7 +110,17 @@ class UAV:
         Args:
             delta_t: 时间步长。
         """
-        self.randomize_velocity()  # 随机化速度
+        # 根据能量状态调整运动行为
+        if self.energy_state == "return":
+            # 返回充电状态：直接飞向HAP，不随机扰动
+            pass  # 速度已在simulator中设置
+        elif self.energy_state == "charging":
+            # 充电状态：完全停止
+            self.velocity[:] = 0.0
+        else:
+            # 正常状态：随机运动
+            self.randomize_velocity()  # 随机化速度
+        
         self.position += self.velocity * float(delta_t)  # 更新位置
 
         self._enforce_height_bounds()  # 应用高度约束

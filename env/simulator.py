@@ -131,6 +131,12 @@ class Simulator:
         self.tx_energy_history = {uav.uid: [] for uav in self.uav_list}  # 通信能耗
         self.charging_energy_history = {uav.uid: [] for uav in self.uav_list}  # 充电能量
 
+        # ============ 位置历史数据（用于save模式） ============
+        self.uav_position_history = []  # 每帧UAV位置列表
+        self.ue_position_history = []   # 每帧UE位置列表
+        self.energy_state_history = []  # 每帧能量状态
+        self.metrics_history = []       # 每帧性能指标
+
         # 初始化性能窗口和曲线
         self._init_performance_figure()
 
@@ -277,6 +283,7 @@ class Simulator:
         self.ax_energy.set_ylabel("Energy (J)")
         self.ax_energy.set_title("UAV Battery Capacity Over Time")
         self.ax_energy.grid(True, linestyle="--", alpha=0.4)
+        self.ax_energy.set_ylim(0, self.energy_model.E_max * 1.1)  # 设置Y轴范围
         
         # 为每个UAV创建电量曲线
         self.energy_lines = {}
@@ -284,8 +291,8 @@ class Simulator:
         for i, uav in enumerate(self.uav_list):
             color = colors[i % len(colors)]
             line, = self.ax_energy.plot(
-                [], [], c=color, linewidth=2.0,
-                label=f"UAV{uav.uid} Energy", marker='o', markersize=3
+                [], [], c=color, linewidth=2.5,
+                label=f"UAV{uav.uid} Energy", marker='o', markersize=2, alpha=0.8
             )
             self.energy_lines[uav.uid] = line
         
@@ -296,14 +303,13 @@ class Simulator:
         self.ax_energy_breakdown.set_xlabel("Time (s)")
         self.ax_energy_breakdown.set_title("Energy Components (Flying + TX - Charging)")
         self.ax_energy_breakdown.grid(True, linestyle="--", alpha=0.4)
+        self.ax_energy_breakdown.set_ylim(0, 100)  # 设置合适的Y轴范围
         
-        # 能量分解曲线（以第一个UAV为示例）
-        if len(self.uav_list) > 0:
-            uav0 = self.uav_list[0]
-            self.ax_energy_breakdown.plot([], [], c='orange', label='Flying Energy', linewidth=2)
-            self.ax_energy_breakdown.plot([], [], c='red', label='TX Energy', linewidth=2)
-            self.ax_energy_breakdown.plot([], [], c='green', label='Charging Energy', linewidth=2)
-            self.ax_energy_breakdown.legend(loc="upper right", fontsize=10)
+        # 为能量分解创建明确的线引用
+        self.flying_energy_line, = self.ax_energy_breakdown.plot([], [], c='orange', label='Flying Energy', linewidth=2.5, alpha=0.8)
+        self.tx_energy_line, = self.ax_energy_breakdown.plot([], [], c='red', label='TX Energy (x10)', linewidth=2.5, alpha=0.8)
+        self.charging_energy_line, = self.ax_energy_breakdown.plot([], [], c='green', label='Charging Energy', linewidth=2.5, alpha=0.8)
+        self.ax_energy_breakdown.legend(loc="upper right", fontsize=10)
         
         self.fig4.tight_layout()
 
@@ -422,22 +428,19 @@ class Simulator:
         # 显示格式更清晰
         time_str = f"Time: {frame * self.delta_t:.1f}s"
         altitudes = " | ".join([f"UAV{uav.uid}: {uav.height:.0f}m" for uav in self.uav_list])
+        uav_energy_text = " | ".join([f"E{uav.uid}: {uav.energy:.0f}J ({uav.energy_state})" for uav in self.uav_list])
         uav_sinr_text = " | ".join([f"SINR{uav.uid}: {metrics['uav_sinrs'][uav.uid]:.2f}" for uav in self.uav_list])
         uav_rate_text = " | ".join([f"R{uav.uid}: {metrics['uav_rates'][uav.uid] / 1e6:.1f}M" for uav in self.uav_list])
         self.altitude_text.set_text(
-            f"{time_str}  |  HAP: {self.hap.height:.0f}m\nAlt: {altitudes}\n{uav_sinr_text}\n{uav_rate_text} Mbps"
+            f"{time_str}  |  HAP: {self.hap.height:.0f}m\nAlt: {altitudes}\n{uav_energy_text}\n{uav_sinr_text}\n{uav_rate_text} Mbps"
         )
 
-        self._update_performance_plot()
-        
-        # 更新能量窗口
-        self._update_energy_plot()
-
-        # 更新热力图
-        self._update_heatmap()
-        
         # ============ 计算和更新能量 ============
         self._update_energy(metrics)
+
+        # 更新能量窗口
+        self._update_energy_plot()
+        self._update_performance_plot()
 
         # 返回需要更新的艺术家对象（只返回主窗口的艺术家）
         return [self.uav_scatter, self.ue_scatter, *self.service_circles, self.altitude_text]
@@ -501,13 +504,16 @@ class Simulator:
             metrics: 包含SINR、速率等指标的字典
         """
         for uav in self.uav_list:
-            # ========== 步骤1：计算飞行能耗 ==========
-            E_fly = self.energy_model.flying_energy(uav.velocity, self.delta_t)
-            
-            # ========== 步骤2：计算通信能耗 ==========
-            covered_ues = self.a2g_channel.find_covered_ues(uav, self.ue_list)
-            num_covered = len(covered_ues)
-            E_tx = self.energy_model.tx_energy(num_covered, self.delta_t)
+            # ========== 步骤1/2：根据状态计算飞行和通信能耗 ==========
+            if uav.energy_state == "charging":
+                # 充电状态时停靠，不再消耗飞行和通信功率
+                E_fly = 0.0
+                E_tx = 0.0
+            else:
+                E_fly = self.energy_model.flying_energy(uav.velocity, self.delta_t)
+                covered_ues = self.a2g_channel.find_covered_ues(uav, self.ue_list)
+                num_covered = len(covered_ues)
+                E_tx = self.energy_model.tx_energy(num_covered, self.delta_t)
             
             # ========== 步骤3-4：计算充电能量 ==========
             # 从A2A信道获取UAV到HAP的链路增益
@@ -526,22 +532,21 @@ class Simulator:
             # ========== 步骤6a：状态机逻辑 - 判断是否需要返回充电 ==========
             if self.energy_model.should_return_to_charging(uav.energy):
                 if uav.energy_state != "charging":
-                    uav.set_energy_state("return")
+                    uav.energy_state = "return"
             
             # ========== 步骤6b：处理"return"状态 - 飞向HAP ==========
             if uav.energy_state == "return":
-                # 计算UAV到HAP的距离
-                diff = self.hap.xy - uav.xy
+                # 计算UAV到HAP的三维距离
+                diff = self.hap.position - uav.position
                 distance = np.linalg.norm(diff)
                 
                 # 如果已接近HAP，进入充电状态
                 if distance < self.energy_model.charging_distance:
-                    uav.set_energy_state("charging")
+                    uav.energy_state = "charging"
                 else:
-                    # 飞向HAP：修改速度指向HAP
+                    # 飞向HAP：修改速度指向HAP，使用最大速度
                     direction = diff / (distance + 1e-6)
-                    speed = np.linalg.norm(uav.velocity)
-                    uav.velocity[:2] = direction * min(speed, uav.vmax)
+                    uav.velocity = direction * uav.vmax
             
             # ========== 步骤6c：处理"charging"状态 - 停止运动 ==========
             elif uav.energy_state == "charging":
@@ -549,9 +554,22 @@ class Simulator:
                 uav.velocity[:2] = 0.0
                 uav.velocity[2] = 0.0
                 
+                # 使用能量模型计算充电能量（基于信道增益）
+                # 从A2A信道获取UAV到HAP的链路增益
+                a2a_metrics = self.a2a_channel.compute_link_metrics(uav, self.hap)
+                channel_gain_nH = a2a_metrics["gain"]  # 幅度（线性度）
+                E_charge = self.energy_model.charging_energy(channel_gain_nH, self.delta_t)
+                
+                # 如果信道增益太小，使用最小充电功率保证充电
+                min_charging_power = 20.0  # 20W最小充电功率
+                min_E_charge = min_charging_power * self.delta_t
+                E_charge = max(E_charge, min_E_charge)
+                
+                uav.energy = min(self.energy_model.E_max, uav.energy + E_charge)
+                
                 # 检查是否充满电，可以恢复正常
                 if self.energy_model.should_resume_normal(uav.energy):
-                    uav.set_energy_state("normal")
+                    uav.energy_state = "normal"
             
             # ========== 步骤6d：处理"normal"状态 - 正常随机运动 ==========
             elif uav.energy_state == "normal":
@@ -596,29 +614,53 @@ class Simulator:
         # ========== 更新电量曲线 ==========
         for uav in self.uav_list:
             if uav.uid in self.energy_history and len(self.energy_history[uav.uid]) > 0:
-                # 使用最少的数据点数（防止长度不匹配）
-                min_len = min(len(x), len(self.energy_history[uav.uid]))
-                self.energy_lines[uav.uid].set_data(x[:min_len], np.array(self.energy_history[uav.uid][:min_len]))
+                # 确保数据长度匹配
+                energy_data = np.array(self.energy_history[uav.uid])
+                if len(energy_data) > len(x):
+                    energy_data = energy_data[:len(x)]
+                elif len(energy_data) < len(x):
+                    # 如果能量数据较短，用最后一个值填充
+                    last_value = energy_data[-1] if len(energy_data) > 0 else 1000.0
+                    padding = np.full(len(x) - len(energy_data), last_value)
+                    energy_data = np.concatenate([energy_data, padding])
+                
+                self.energy_lines[uav.uid].set_data(x, energy_data)
         
         # 重新计算自动缩放
         self.ax_energy.relim()
         self.ax_energy.autoscale_view()
         
-        # ========== 更新能量分解 ==========
+        # ========== 更新能量分解（显示所有UAV的平均值）==========
         if len(self.uav_list) > 0 and len(x) > 0:
-            uav0 = self.uav_list[0]
-            flying = np.array(self.flying_energy_history.get(uav0.uid, []))
-            tx = np.array(self.tx_energy_history.get(uav0.uid, []))
-            charging = np.array(self.charging_energy_history.get(uav0.uid, []))
+            # 计算所有UAV的平均能量值
+            all_flying = []
+            all_tx = []
+            all_charging = []
             
-            # 更新分解图的曲线，只在有数据时更新
-            if len(flying) > 0 and len(tx) > 0 and len(charging) > 0:
-                min_len = min(len(x), len(flying), len(tx), len(charging))
-                lines = self.ax_energy_breakdown.get_lines()
-                if len(lines) >= 3:
-                    lines[0].set_data(x[:min_len], flying[:min_len])
-                    lines[1].set_data(x[:min_len], tx[:min_len])
-                    lines[2].set_data(x[:min_len], charging[:min_len])
+            for uav in self.uav_list:
+                flying_hist = self.flying_energy_history.get(uav.uid, [])
+                tx_hist = self.tx_energy_history.get(uav.uid, [])
+                charging_hist = self.charging_energy_history.get(uav.uid, [])
+                
+                # 确保数据长度一致
+                min_len = min(len(flying_hist), len(tx_hist), len(charging_hist), len(x))
+                if min_len > 0:
+                    all_flying.append(np.array(flying_hist[:min_len]))
+                    all_tx.append(np.array(tx_hist[:min_len]))
+                    all_charging.append(np.array(charging_hist[:min_len]))
+            
+            # 计算平均值
+            if all_flying:
+                avg_flying = np.mean(np.array(all_flying), axis=0)
+                self.flying_energy_line.set_data(x[:len(avg_flying)], avg_flying)
+            
+            if all_tx:
+                avg_tx = np.mean(np.array(all_tx), axis=0)
+                self.tx_energy_line.set_data(x[:len(avg_tx)], avg_tx * 10)  # 放大10倍显示
+            
+            if all_charging:
+                avg_charging = np.mean(np.array(all_charging), axis=0)
+                self.charging_energy_line.set_data(x[:len(avg_charging)], avg_charging)
             
             self.ax_energy_breakdown.relim()
             self.ax_energy_breakdown.autoscale_view()
@@ -677,17 +719,18 @@ class Simulator:
             # 如果要保存为文件，使用非GUI后端
             plt.switch_backend('Agg')
 
-            # 先运行仿真找到最佳热力图时刻
-            print("正在分析仿真以找到最佳热力图时刻...")
-            best_frame = 0
-            max_ue_count = 0
-            frame_positions = []
-
+            # 运行仿真以收集数据
+            print(f"正在运行仿真 ({frames}帧)...")
+            
             for frame in range(frames):
-                # 保存当前位置
+                # 保存当前状态
                 uav_positions = [uav.position.copy() for uav in self.uav_list]
                 ue_positions = [ue.position.copy() for ue in self.ue_list]
-                frame_positions.append((uav_positions, ue_positions))
+                energy_states = [(uav.uid, uav.energy_state, uav.energy) for uav in self.uav_list]
+                
+                self.uav_position_history.append(uav_positions)
+                self.ue_position_history.append(ue_positions)
+                self.energy_state_history.append(energy_states)
 
                 # 更新位置
                 for uav in self.uav_list:
@@ -697,79 +740,107 @@ class Simulator:
 
                 # 计算并记录性能指标
                 metrics = self._compute_channel_metrics(frame)
+                self.metrics_history.append(metrics)
+                
+                # 更新能量
+                self._update_energy(metrics)
 
-                # 检查第一个UAV覆盖范围内的UE数量
-                covered_count = len(self.a2g_channel.find_covered_ues(self.uav_list[0], self.ue_list))
-                if covered_count > max_ue_count:
-                    max_ue_count = covered_count
-                    best_frame = frame
+            print(f"✓ 仿真完成 ({len(self.uav_position_history)}帧)")
 
-            print(f"找到最佳热力图时刻: 帧{best_frame}, UAV覆盖范围内有{max_ue_count}个UE")
+            # 初始化窗口
+            self._init_artists()
+            self._init_energy_figure()
 
-            # 回放到最佳时刻
-            if best_frame < len(frame_positions):
-                uav_positions, ue_positions = frame_positions[best_frame]
+            # 创建动画，使用保存的历史数据
+            def update_for_save(frame):
+                # 从历史数据恢复状态
+                uav_positions = self.uav_position_history[frame]
+                ue_positions = self.ue_position_history[frame]
+                energy_states = self.energy_state_history[frame]
+                metrics = self.metrics_history[frame]
+                
+                # 恢复位置
                 for uav, pos in zip(self.uav_list, uav_positions):
                     uav.position = pos
                 for ue, pos in zip(self.ue_list, ue_positions):
                     ue.position = pos
+                
+                # 恢复能量状态（用于显示）
+                for uid, state, energy in energy_states:
+                    for uav in self.uav_list:
+                        if uav.uid == uid:
+                            uav.energy_state = state
+                            uav.energy = energy
+                            break
 
-            # 初始化所有窗口（在最佳时刻）
-            self._init_artists()
-            self._init_performance_figure()
-            self._init_heatmap_figure()
+                # 更新散点图位置
+                self.uav_scatter.set_offsets(np.array([uav.xy for uav in self.uav_list]))
+                self.ue_scatter.set_offsets(np.array([ue.xy for ue in self.ue_list]))
 
-            # 创建主窗口动画（重新运行仿真）
-            # 重置位置到开始状态
-            for frame_idx, (uav_pos, ue_pos) in enumerate(frame_positions):
-                for uav, pos in zip(self.uav_list, uav_pos):
-                    uav.position = pos
-                for ue, pos in zip(self.ue_list, ue_pos):
-                    ue.position = pos
-                break  # 只重置到第一帧
+                # 更新服务圆圈位置
+                for circle, uav in zip(self.service_circles, self.uav_list):
+                    circle.center = tuple(uav.xy)
+
+                # 更新高度显示文本
+                time_str = f"Time: {frame * self.delta_t:.1f}s"
+                altitudes = " | ".join([f"UAV{uav.uid}: {uav.height:.0f}m" for uav in self.uav_list])
+                uav_energy_text = " | ".join([f"E{uav.uid}: {uav.energy:.0f}J ({uav.energy_state})" for uav in self.uav_list])
+                uav_sinr_text = " | ".join([f"SINR{uav.uid}: {metrics['uav_sinrs'][uav.uid]:.2f}" for uav in self.uav_list])
+                uav_rate_text = " | ".join([f"R{uav.uid}: {metrics['uav_rates'][uav.uid] / 1e6:.1f}M" for uav in self.uav_list])
+                self.altitude_text.set_text(
+                    f"{time_str}  |  HAP: {self.hap.height:.0f}m\nAlt: {altitudes}\n{uav_energy_text}\n{uav_sinr_text}\n{uav_rate_text} Mbps"
+                )
+
+                # 更新能量图
+                self._update_energy_plot()
+                self._update_performance_plot()
+                
+                return [self.uav_scatter, self.ue_scatter, *self.service_circles, self.altitude_text]
 
             anim = animation.FuncAnimation(
                 self.fig,
-                self._update_artists,
+                update_for_save,
                 frames=frames,
                 interval=interval,
                 blit=False,
                 repeat=False,
             )
 
-            # 保存主窗口动画
+            # 保存动画
             try:
                 writer = animation.PillowWriter(fps=1000/interval)
                 anim.save(save_path, writer=writer)
-                print(f"主窗口动画已保存到: {save_path}")
+                print(f"✓ 运动仿真动画已保存到: {save_path}")
+                
+                # 保存能量管理图
+                energy_path = save_path.replace('.gif', '_energy.png')
+                self.fig4.savefig(energy_path, dpi=150, bbox_inches='tight')
+                print(f"✓ 能量管理图已保存到: {energy_path}")
+
+                # 保存信道性能图和SINR热力图
+                self._init_performance_figure()
+                self._update_performance_plot()
+                perf_path = save_path.replace('.gif', '_performance.png')
+                self.fig2.savefig(perf_path, dpi=150, bbox_inches='tight')
+                print(f"✓ 信道性能图已保存到: {perf_path}")
+
+                self._init_heatmap_figure()
+                heatmap_path = save_path.replace('.gif', '_heatmap.png')
+                self.fig3.savefig(heatmap_path, dpi=150, bbox_inches='tight')
+                print(f"✓ SINR热力图已保存到: {heatmap_path}")
+
             except Exception as e:
                 print(f"保存动画失败: {e}")
                 print("请确保安装了必要的依赖: pip install pillow")
-
-            # 保存性能曲线和热力图的静态图像（在最佳时刻）
-            try:
-                # 性能曲线显示完整趋势
-                perf_path = save_path.replace('.gif', '_performance.png')
-                self.fig2.savefig(perf_path, dpi=150, bbox_inches='tight')
-                print(f"性能曲线图已保存到: {perf_path}")
-
-                # 热力图显示最佳时刻
-                heatmap_path = save_path.replace('.gif', '_heatmap.png')
-                self.fig3.savefig(heatmap_path, dpi=150, bbox_inches='tight')
-                print(f"热力图已保存到: {heatmap_path}")
-
-            except Exception as e:
-                print(f"保存静态图像失败: {e}")
 
         else:
             # 实时显示模式
             try:
                 # 尝试使用交互式后端
                 plt.switch_backend('TkAgg')
-                # 初始化所有窗口
+                # 初始化所有窗口：运动仿真 + 能量管理
                 self._init_artists()
-                self._init_performance_figure()
-                self._init_heatmap_figure()
+                self._init_energy_figure()
                 animation.FuncAnimation(
                     self.fig,
                     self._update_artists,
@@ -781,15 +852,13 @@ class Simulator:
                 plt.show()
             except Exception as e:
                 print(f"无法显示实时动画: {e}")
-                print("自动生成静态图像...")
+                print("自动生成能量管理图...")
                 plt.switch_backend('Agg')
                 self._init_artists()
-                self._init_performance_figure()
-                self._init_heatmap_figure()
+                self._init_energy_figure()
                 self.fig.savefig('simulation.png', dpi=150, bbox_inches='tight')
-                self.fig2.savefig('performance.png', dpi=150, bbox_inches='tight')
-                self.fig3.savefig('heatmap.png', dpi=150, bbox_inches='tight')
-                print("静态图像已保存为 simulation.png, performance.png, heatmap.png")
+                self.fig4.savefig('energy.png', dpi=150, bbox_inches='tight')
+                print("✓ 图像已保存为 simulation.png, energy.png")
 
 
 def build_default_simulation() -> Simulator:
@@ -802,7 +871,7 @@ def build_default_simulation() -> Simulator:
         配置好的Simulator实例。
     """
     area_bounds = (0.0, 1000.0, 0.0, 1000.0)  # 仿真区域
-    hap = HAP(position=(500.0, 500.0, 2000.0))  # HAP位置
+    hap = HAP(position=(500.0, 500.0, 220.0))  # HAP位置（进一步降低高度）
 
     # 创建UAV列表
     uav_list = []
@@ -846,8 +915,8 @@ def build_default_simulation() -> Simulator:
     )
 
     a2a_channel = A2AChannel(
-        beta0=1e-3,
-        kappa=1e-4,
+        beta0=10.0,      # 大幅增加基准增益系数以提供有效充电
+        kappa=1e-3,      # 衰减因子
         bandwidth=10e6,
         transmit_power=0.5,
         noise_power=1e-9,
@@ -879,147 +948,61 @@ if __name__ == "__main__":
             print(f"正在生成动画文件: {save_path}")
             simulator.run(frames=100, interval=100, save_path=save_path)
         elif sys.argv[1] == "--image":
-            # 保存静态图像模式
-            image_path = sys.argv[2] if len(sys.argv) > 2 else "simulation.png"
-            print(f"正在生成静态图像: {image_path}")
+            # 保存静态图像模式（仅生成能量图）
+            image_path = sys.argv[2] if len(sys.argv) > 2 else "energy.png"
+            print(f"正在生成能量管理图像: {image_path}")
 
-            # 运行仿真找到最佳热力图时刻
+            # 运行仿真以收集能量数据
             plt.switch_backend('Agg')
-            print("正在分析仿真以找到最佳热力图时刻...")
-            best_frame = 0
-            max_ue_count = 0
-            frame_positions = []
-
+            print("正在运行仿真以收集能量数据...")
+            
             for frame in range(200):  # 运行200帧来收集数据
-                # 保存当前位置
-                uav_positions = [simulator.uav_list[i].position.copy() for i in range(len(simulator.uav_list))]
-                ue_positions = [simulator.ue_list[i].position.copy() for i in range(len(simulator.ue_list))]
-                frame_positions.append((uav_positions, ue_positions))
-
                 # 更新位置
                 for uav in simulator.uav_list:
                     uav.step(simulator.delta_t)
                 for ue in simulator.ue_list:
                     ue.step(simulator.delta_t)
 
-                # 计算并记录性能指标
+                # 计算性能指标和能量
                 metrics = simulator._compute_channel_metrics(frame)
-                
-                # 计算并更新能量
                 simulator._update_energy(metrics)
 
-                # 检查第一个UAV覆盖范围内的UE数量
-                covered_count = len(simulator.a2g_channel.find_covered_ues(simulator.uav_list[0], simulator.ue_list))
-                if covered_count > max_ue_count:
-                    max_ue_count = covered_count
-                    best_frame = frame
-
-            print(f"找到最佳热力图时刻: 帧{best_frame}, UAV覆盖范围内有{max_ue_count}个UE")
             print(f"收集了 {len(simulator.time_history)} 个数据点")
 
-            # 生成可视化
-            print("正在生成可视化...")
-
-            # 主窗口（使用第一帧）
-            if len(frame_positions) > 0:
-                uav_positions, ue_positions = frame_positions[0]
-                for uav, pos in zip(simulator.uav_list, uav_positions):
-                    uav.position = pos
-                for ue, pos in zip(simulator.ue_list, ue_positions):
-                    ue.position = pos
-
-            simulator._init_artists()
-            simulator.fig.savefig(image_path, dpi=150, bbox_inches='tight')
-            print(f"运动仿真图已保存到: {image_path}")
-
-            # 性能曲线图（显示完整趋势）
-            perf_path = image_path.replace('.png', '_performance.png')
-            fig_perf, (ax_sinr, ax_snr, ax_rate) = plt.subplots(3, 1, figsize=(9, 11), sharex=True)
-            fig_perf.suptitle("Channel Performance Metrics", fontsize=14)
-
-            if len(simulator.time_history) > 0:
-                x = np.array(simulator.time_history)
-                y_sinr = np.array(simulator.avg_a2g_sinr_history)
-                y_snr = np.array(simulator.avg_a2a_snr_history)
-                y_rate = np.array(simulator.avg_rate_history)
-
-                # 绘制平均值曲线
-                ax_sinr.plot(x, y_sinr, c="tab:blue", label="Avg A2G SINR", linewidth=2, linestyle='--')
-                
-                # 绘制每个UAV的SINR曲线
-                colors = ['tab:red', 'tab:purple', 'tab:brown']
-                for i, uav in enumerate(simulator.uav_list):
-                    if uav.uid in simulator.uav_sinr_history:
-                        y_uav_sinr = np.array(simulator.uav_sinr_history[uav.uid])
-                        ax_sinr.plot(x, y_uav_sinr, c=colors[i % len(colors)], 
-                                   label=f"UAV{uav.uid} SINR", linewidth=1.5, alpha=0.8)
-                
-                ax_sinr.set_ylabel("A2G SINR (dB)")
-                ax_sinr.grid(True, linestyle="--", alpha=0.4)
-                ax_sinr.legend(loc="upper right")
-
-                ax_snr.plot(x, y_snr, c="tab:orange", label="Avg A2A SNR", linewidth=2)
-                ax_snr.set_ylabel("A2A SNR (dB)")
-                ax_snr.grid(True, linestyle="--", alpha=0.4)
-                ax_snr.legend(loc="upper right")
-
-                # 绘制平均速率曲线
-                ax_rate.plot(x, y_rate, c="tab:green", label="Avg Rate", linewidth=2, linestyle='--')
-                
-                # 绘制每个UAV的速率曲线
-                for i, uav in enumerate(simulator.uav_list):
-                    if uav.uid in simulator.uav_rate_history:
-                        y_uav_rate = np.array(simulator.uav_rate_history[uav.uid])
-                        ax_rate.plot(x, y_uav_rate, c=colors[i % len(colors)], 
-                                   label=f"UAV{uav.uid} Rate", linewidth=1.5, alpha=0.8)
-                
-                ax_rate.set_ylabel("Rate (bps)")
-                ax_rate.set_xlabel("Time (s)")
-                ax_rate.grid(True, linestyle="--", alpha=0.4)
-                ax_rate.legend(loc="upper right")
-
-            fig_perf.tight_layout()
-            fig_perf.savefig(perf_path, dpi=150, bbox_inches='tight')
-            print(f"性能曲线图已保存到: {perf_path}")
-
-            # 热力图（使用最佳时刻）
-            if best_frame < len(frame_positions):
-                uav_positions, ue_positions = frame_positions[best_frame]
-                for uav, pos in zip(simulator.uav_list, uav_positions):
-                    uav.position = pos
-                for ue, pos in zip(simulator.ue_list, ue_positions):
-                    ue.position = pos
-
-            heatmap_path = image_path.replace('.png', '_heatmap.png')
-            simulator._init_heatmap_figure()
-            simulator._update_heatmap()
-            simulator.fig3.savefig(heatmap_path, dpi=150, bbox_inches='tight')
-            print(f"热力图已保存到: {heatmap_path}")
-
-            # 能量图（显示各UAV的电量和能耗）
-            energy_path = image_path.replace('.png', '_energy.png')
+            # 生成能量图
+            print("正在生成能量管理图...")
             simulator._init_energy_figure()
             simulator._update_energy_plot()
-            simulator.fig4.savefig(energy_path, dpi=150, bbox_inches='tight')
-            print(f"能量管理图已保存到: {energy_path}")
+            simulator.fig4.savefig(image_path, dpi=150, bbox_inches='tight')
+            print(f"✓ 能量管理图已保存到: {image_path}")
 
+            # 保存信道性能图和SINR热力图
+            simulator._init_performance_figure()
+            simulator._update_performance_plot()
+            perf_path = image_path.replace('.png', '_performance.png')
+            simulator.fig2.savefig(perf_path, dpi=150, bbox_inches='tight')
+            print(f"✓ 信道性能图已保存到: {perf_path}")
+
+            simulator._init_heatmap_figure()
+            heatmap_path = image_path.replace('.png', '_heatmap.png')
+            simulator.fig3.savefig(heatmap_path, dpi=150, bbox_inches='tight')
+            print(f"✓ SINR热力图已保存到: {heatmap_path}")
+            
             plt.close('all')
     else:
         # 实时显示模式
         print("启动实时动画...")
-        print("将显示三个窗口：运动仿真、性能曲线、SINR热力图")
-        print("如果在VS Code中无法显示，请使用以下命令之一:")
-        print("  python env/simulator.py --save simulation.gif    # 保存为GIF动画")
-        print("  python env/simulator.py --image simulation.png   # 保存静态图像")
+        print("将显示两个窗口：运动仿真 + 实时电量管理")
+        print("如果在VS Code中无法显示，请使用以下命令:")
+        print("  python env/simulator.py --image energy.png   # 生成能量管理图")
         try:
             simulator.run(frames=500, interval=120)
         except Exception as e:
             print(f"实时显示失败: {e}")
-            print("建议使用以下命令生成高质量图像:")
-            print("  python env/simulator.py --save simulation.gif    # 保存为动画GIF")
-            print("  python env/simulator.py --image simulation.png   # 保存静态图像")
+            print("请尝试以下命令生成能量图:")
+            print("  python env/simulator.py --image energy.png")
             print("")
-            print("正在自动生成静态图像...")
+            print("正在自动生成能量管理图...")
 
             # 运行仿真收集数据
             plt.switch_backend('Agg')
@@ -1034,51 +1017,20 @@ if __name__ == "__main__":
 
             print(f"收集了 {len(simulator.time_history)} 个数据点")
 
-            # 生成静态图像
-            print("正在生成可视化...")
-
-            # 创建运动仿真图
-            simulator._init_artists()
-            simulator.fig.savefig('simulation.png', dpi=150, bbox_inches='tight')
-
-            # 创建性能曲线图
-            fig_perf, (ax_sinr, ax_snr, ax_rate) = plt.subplots(3, 1, figsize=(9, 11), sharex=True)
-            fig_perf.suptitle("Channel Performance Metrics", fontsize=14)
-
-            if len(simulator.time_history) > 0:
-                x = np.array(simulator.time_history)
-                y_sinr = np.array(simulator.avg_a2g_sinr_history)
-                y_snr = np.array(simulator.avg_a2a_snr_history)
-                y_rate = np.array(simulator.avg_rate_history)
-
-                ax_sinr.plot(x, y_sinr, c="tab:blue", label="Avg A2G SINR", linewidth=2)
-                ax_sinr.set_ylabel("Avg A2G SINR")
-                ax_sinr.grid(True, linestyle="--", alpha=0.4)
-                ax_sinr.legend(loc="upper right")
-
-                ax_snr.plot(x, y_snr, c="tab:orange", label="Avg A2A SNR", linewidth=2)
-                ax_snr.set_ylabel("Avg A2A SNR")
-                ax_snr.grid(True, linestyle="--", alpha=0.4)
-                ax_snr.legend(loc="upper right")
-
-                ax_rate.plot(x, y_rate, c="tab:green", label="Avg Rate", linewidth=2)
-                ax_rate.set_ylabel("Avg Rate (bps)")
-                ax_rate.set_xlabel("Time (s)")
-                ax_rate.grid(True, linestyle="--", alpha=0.4)
-                ax_rate.legend(loc="upper right")
-
-            fig_perf.tight_layout()
-            fig_perf.savefig('performance.png', dpi=150, bbox_inches='tight')
-
-            # 创建热力图
-            simulator._init_heatmap_figure()
-            simulator._update_heatmap()
-            simulator.fig3.savefig('heatmap.png', dpi=150, bbox_inches='tight')
-
-            # 创建能量图
+            # 生成能量图
+            print("正在生成能量管理图...")
             simulator._init_energy_figure()
             simulator._update_energy_plot()
             simulator.fig4.savefig('energy.png', dpi=150, bbox_inches='tight')
+            print(f"✓ 能量管理图已保存到: energy.png")
 
-            plt.close('all')  # 关闭所有图形
-            print("静态图像已保存为 simulation.png, performance.png, heatmap.png, energy.png")
+            simulator._init_performance_figure()
+            simulator._update_performance_plot()
+            simulator.fig2.savefig('performance.png', dpi=150, bbox_inches='tight')
+            print(f"✓ 信道性能图已保存到: performance.png")
+
+            simulator._init_heatmap_figure()
+            simulator.fig3.savefig('heatmap.png', dpi=150, bbox_inches='tight')
+            print(f"✓ SINR热力图已保存到: heatmap.png")
+
+            plt.close('all')
