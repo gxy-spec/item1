@@ -13,6 +13,7 @@ import numpy as np
 
 from channel.a2g_channel import A2GChannel
 from channel.a2a_channel import A2AChannel
+from energy.energy_model import EnergyModel
 from mobility.uav import UAV
 from mobility.ue import UE
 
@@ -97,6 +98,14 @@ class Simulator:
         self.delta_t = float(delta_t)   # 时间步长
         self.a2g_channel = a2g_channel
         self.a2a_channel = a2a_channel
+        
+        # ============ 能量模型初始化 ============
+        self.energy_model = EnergyModel()
+        
+        # 为所有UAV设置初始电量和最大电量
+        for uav in self.uav_list:
+            uav.energy_max = self.energy_model.E_max
+            uav.energy = self.energy_model.E_max  # 初始满电
 
         # 初始化matplotlib图形
         self.fig, self.ax = plt.subplots(figsize=(10, 8))
@@ -115,12 +124,21 @@ class Simulator:
         self.avg_rate_history = []
         self.uav_sinr_history = {uav.uid: [] for uav in self.uav_list}  # 每个UAV的SINR历史
         self.uav_rate_history = {uav.uid: [] for uav in self.uav_list}  # 每个UAV的速率历史
+        
+        # ============ 能量历史数据 ============
+        self.energy_history = {uav.uid: [] for uav in self.uav_list}  # 各UAV电量历史
+        self.flying_energy_history = {uav.uid: [] for uav in self.uav_list}  # 飞行能耗
+        self.tx_energy_history = {uav.uid: [] for uav in self.uav_list}  # 通信能耗
+        self.charging_energy_history = {uav.uid: [] for uav in self.uav_list}  # 充电能量
 
         # 初始化性能窗口和曲线
         self._init_performance_figure()
 
         # 初始化热力图窗口
         self._init_heatmap_figure()
+        
+        # 初始化能量窗口
+        self._init_energy_figure()
 
     def _configure_axes(self) -> None:
         """
@@ -241,6 +259,53 @@ class Simulator:
         
         self.ax_heatmap.legend(loc="upper right", fontsize=10)
         self.fig3.tight_layout()
+
+    def _init_energy_figure(self) -> None:
+        """
+        初始化能量窗口，展示各UAV的能量状态。
+        
+        包含两个子图：
+        1. 电量曲线（各UAV的E(t)）
+        2. 能量分解堆积图（能耗和充电）
+        """
+        self.fig4, (self.ax_energy, self.ax_energy_breakdown) = plt.subplots(
+            2, 1, figsize=(10, 8), sharex=True
+        )
+        self.fig4.suptitle("UAV Energy Management", fontsize=14)
+        
+        # ========== 子图1：电量曲线 ==========
+        self.ax_energy.set_ylabel("Energy (J)")
+        self.ax_energy.set_title("UAV Battery Capacity Over Time")
+        self.ax_energy.grid(True, linestyle="--", alpha=0.4)
+        
+        # 为每个UAV创建电量曲线
+        self.energy_lines = {}
+        colors = ['tab:red', 'tab:blue', 'tab:green', 'tab:orange', 'tab:purple']
+        for i, uav in enumerate(self.uav_list):
+            color = colors[i % len(colors)]
+            line, = self.ax_energy.plot(
+                [], [], c=color, linewidth=2.0,
+                label=f"UAV{uav.uid} Energy", marker='o', markersize=3
+            )
+            self.energy_lines[uav.uid] = line
+        
+        self.ax_energy.legend(loc="upper right", fontsize=10)
+        
+        # ========== 子图2：能量分解 ==========
+        self.ax_energy_breakdown.set_ylabel("Energy (J)")
+        self.ax_energy_breakdown.set_xlabel("Time (s)")
+        self.ax_energy_breakdown.set_title("Energy Components (Flying + TX - Charging)")
+        self.ax_energy_breakdown.grid(True, linestyle="--", alpha=0.4)
+        
+        # 能量分解曲线（以第一个UAV为示例）
+        if len(self.uav_list) > 0:
+            uav0 = self.uav_list[0]
+            self.ax_energy_breakdown.plot([], [], c='orange', label='Flying Energy', linewidth=2)
+            self.ax_energy_breakdown.plot([], [], c='red', label='TX Energy', linewidth=2)
+            self.ax_energy_breakdown.plot([], [], c='green', label='Charging Energy', linewidth=2)
+            self.ax_energy_breakdown.legend(loc="upper right", fontsize=10)
+        
+        self.fig4.tight_layout()
 
     def _init_artists(self) -> List:
         """
@@ -364,9 +429,15 @@ class Simulator:
         )
 
         self._update_performance_plot()
+        
+        # 更新能量窗口
+        self._update_energy_plot()
 
         # 更新热力图
         self._update_heatmap()
+        
+        # ============ 计算和更新能量 ============
+        self._update_energy(metrics)
 
         # 返回需要更新的艺术家对象（只返回主窗口的艺术家）
         return [self.uav_scatter, self.ue_scatter, *self.service_circles, self.altitude_text]
@@ -409,6 +480,89 @@ class Simulator:
             "uav_sinrs": uav_sinrs,
             "uav_rates": uav_rates,
         }
+    
+    # ========================================
+    # 【能量模型集成方法】
+    # ========================================
+    
+    def _update_energy(self, metrics: dict) -> None:
+        """
+        计算和更新所有UAV的能量。
+        
+        对每个UAV执行以下步骤：
+        1. 计算飞行能耗 E_fly = P_fly * delta_t
+        2. 计算通信能耗 E_tx = p_tx * num_ue * delta_t
+        3. 从A2A信道获取 g_nH
+        4. 计算充电能量 E_charge = eta * P_HAP * g_nH * delta_t
+        5. 更新电池容量 E(t+1) = E(t) - E_fly - E_tx + E_charge
+        6. 实现状态机逻辑
+        
+        Args:
+            metrics: 包含SINR、速率等指标的字典
+        """
+        for uav in self.uav_list:
+            # ========== 步骤1：计算飞行能耗 ==========
+            E_fly = self.energy_model.flying_energy(uav.velocity, self.delta_t)
+            
+            # ========== 步骤2：计算通信能耗 ==========
+            covered_ues = self.a2g_channel.find_covered_ues(uav, self.ue_list)
+            num_covered = len(covered_ues)
+            E_tx = self.energy_model.tx_energy(num_covered, self.delta_t)
+            
+            # ========== 步骤3-4：计算充电能量 ==========
+            # 从A2A信道获取UAV到HAP的链路增益
+            a2a_metrics = self.a2a_channel.compute_link_metrics(uav, self.hap)
+            channel_gain_nH = a2a_metrics["gain"]  # 幅度（线性度）
+            E_charge = self.energy_model.charging_energy(channel_gain_nH, self.delta_t)
+            
+            # ========== 步骤5：更新电池容量 ==========
+            uav.energy = self.energy_model.update_battery(
+                uav.energy,
+                E_fly,
+                E_tx,
+                E_charge,
+            )
+            
+            # ========== 步骤6a：状态机逻辑 - 判断是否需要返回充电 ==========
+            if self.energy_model.should_return_to_charging(uav.energy):
+                if uav.energy_state != "charging":
+                    uav.set_energy_state("return")
+            
+            # ========== 步骤6b：处理"return"状态 - 飞向HAP ==========
+            if uav.energy_state == "return":
+                # 计算UAV到HAP的距离
+                diff = self.hap.xy - uav.xy
+                distance = np.linalg.norm(diff)
+                
+                # 如果已接近HAP，进入充电状态
+                if distance < self.energy_model.charging_distance:
+                    uav.set_energy_state("charging")
+                else:
+                    # 飞向HAP：修改速度指向HAP
+                    direction = diff / (distance + 1e-6)
+                    speed = np.linalg.norm(uav.velocity)
+                    uav.velocity[:2] = direction * min(speed, uav.vmax)
+            
+            # ========== 步骤6c：处理"charging"状态 - 停止运动 ==========
+            elif uav.energy_state == "charging":
+                # 停止水平运动，垂直速度为0
+                uav.velocity[:2] = 0.0
+                uav.velocity[2] = 0.0
+                
+                # 检查是否充满电，可以恢复正常
+                if self.energy_model.should_resume_normal(uav.energy):
+                    uav.set_energy_state("normal")
+            
+            # ========== 步骤6d：处理"normal"状态 - 正常随机运动 ==========
+            elif uav.energy_state == "normal":
+                # 正常运动由uav.step()处理
+                pass
+            
+            # ========== 记录能量历史 ==========
+            self.energy_history[uav.uid].append(uav.energy)
+            self.flying_energy_history[uav.uid].append(E_fly)
+            self.tx_energy_history[uav.uid].append(E_tx)
+            self.charging_energy_history[uav.uid].append(E_charge)
 
     def _update_performance_plot(self) -> None:
         """刷新性能曲线图数据。"""
@@ -430,6 +584,47 @@ class Simulator:
 
         if self.fig2 is not None:
             self.fig2.canvas.draw_idle()
+
+    def _update_energy_plot(self) -> None:
+        """刷新能量窗口数据。"""
+        # 检查是否有数据
+        if len(self.time_history) == 0:
+            return
+        
+        x = np.array(self.time_history)
+        
+        # ========== 更新电量曲线 ==========
+        for uav in self.uav_list:
+            if uav.uid in self.energy_history and len(self.energy_history[uav.uid]) > 0:
+                # 使用最少的数据点数（防止长度不匹配）
+                min_len = min(len(x), len(self.energy_history[uav.uid]))
+                self.energy_lines[uav.uid].set_data(x[:min_len], np.array(self.energy_history[uav.uid][:min_len]))
+        
+        # 重新计算自动缩放
+        self.ax_energy.relim()
+        self.ax_energy.autoscale_view()
+        
+        # ========== 更新能量分解 ==========
+        if len(self.uav_list) > 0 and len(x) > 0:
+            uav0 = self.uav_list[0]
+            flying = np.array(self.flying_energy_history.get(uav0.uid, []))
+            tx = np.array(self.tx_energy_history.get(uav0.uid, []))
+            charging = np.array(self.charging_energy_history.get(uav0.uid, []))
+            
+            # 更新分解图的曲线，只在有数据时更新
+            if len(flying) > 0 and len(tx) > 0 and len(charging) > 0:
+                min_len = min(len(x), len(flying), len(tx), len(charging))
+                lines = self.ax_energy_breakdown.get_lines()
+                if len(lines) >= 3:
+                    lines[0].set_data(x[:min_len], flying[:min_len])
+                    lines[1].set_data(x[:min_len], tx[:min_len])
+                    lines[2].set_data(x[:min_len], charging[:min_len])
+            
+            self.ax_energy_breakdown.relim()
+            self.ax_energy_breakdown.autoscale_view()
+        
+        if self.fig4 is not None:
+            self.fig4.canvas.draw_idle()
 
     def _update_heatmap(self) -> None:
         """更新热力图显示。"""
@@ -709,6 +904,9 @@ if __name__ == "__main__":
 
                 # 计算并记录性能指标
                 metrics = simulator._compute_channel_metrics(frame)
+                
+                # 计算并更新能量
+                simulator._update_energy(metrics)
 
                 # 检查第一个UAV覆盖范围内的UE数量
                 covered_count = len(simulator.a2g_channel.find_covered_ues(simulator.uav_list[0], simulator.ue_list))
@@ -798,6 +996,13 @@ if __name__ == "__main__":
             simulator.fig3.savefig(heatmap_path, dpi=150, bbox_inches='tight')
             print(f"热力图已保存到: {heatmap_path}")
 
+            # 能量图（显示各UAV的电量和能耗）
+            energy_path = image_path.replace('.png', '_energy.png')
+            simulator._init_energy_figure()
+            simulator._update_energy_plot()
+            simulator.fig4.savefig(energy_path, dpi=150, bbox_inches='tight')
+            print(f"能量管理图已保存到: {energy_path}")
+
             plt.close('all')
     else:
         # 实时显示模式
@@ -825,6 +1030,7 @@ if __name__ == "__main__":
                 for ue in simulator.ue_list:
                     ue.step(simulator.delta_t)
                 metrics = simulator._compute_channel_metrics(frame)
+                simulator._update_energy(metrics)
 
             print(f"收集了 {len(simulator.time_history)} 个数据点")
 
@@ -869,5 +1075,10 @@ if __name__ == "__main__":
             simulator._update_heatmap()
             simulator.fig3.savefig('heatmap.png', dpi=150, bbox_inches='tight')
 
+            # 创建能量图
+            simulator._init_energy_figure()
+            simulator._update_energy_plot()
+            simulator.fig4.savefig('energy.png', dpi=150, bbox_inches='tight')
+
             plt.close('all')  # 关闭所有图形
-            print("静态图像已保存为 simulation.png, performance.png, heatmap.png")
+            print("静态图像已保存为 simulation.png, performance.png, heatmap.png, energy.png")

@@ -43,6 +43,20 @@ class UAV:
         self.service_radius = float(service_radius)  # 服务半径
         self.bounds = bounds  # 平面边界约束
 
+        # ============ 能量管理属性 ============
+        # 状态机
+        self.energy_state = "normal"  # "normal" | "return" | "charging"
+        
+        # 能量相关（将在simulator中初始化）
+        self.energy = 0.0  # 当前电量（J）
+        self.energy_max = 1000.0  # 最大电量（J），由EnergyModel设置
+        
+        # 能量历史（用于可视化）
+        self.energy_history = []
+        self.flying_energy_history = []  # E_fly
+        self.tx_energy_history = []      # E_tx
+        self.charging_energy_history = []  # E_charge
+        
         # 初始化时强制执行约束
         self._enforce_velocity_limit()
         self._enforce_height_bounds()
@@ -152,6 +166,66 @@ class UAV:
             当前高度值。
         """
         return float(self.position[2])
+
+    # ========================================
+    # 【能量管理方法】
+    # ========================================
+    
+    def get_energy_percentage(self) -> float:
+        """
+        获取当前电量百分比（0-100）。
+        
+        Returns:
+            电量百分比（%）
+        """
+        if self.energy_max <= 0:
+            return 0.0
+        return (self.energy / self.energy_max) * 100.0
+    
+    def is_low_energy(self, threshold: float = 0.2) -> bool:
+        """
+        判断电量是否过低。
+        
+        Args:
+            threshold: 电量比例阈值（默认0.2，即20%）
+        
+        Returns:
+            True 如果 energy ≤ threshold * energy_max
+        """
+        return self.energy <= threshold * self.energy_max
+    
+    def is_fully_charged(self, threshold: float = 0.9) -> bool:
+        """
+        判断电量是否充足。
+        
+        Args:
+            threshold: 电量比例阈值（默认0.9，即90%）
+        
+        Returns:
+            True 如果 energy ≥ threshold * energy_max
+        """
+        return self.energy >= threshold * self.energy_max
+    
+    def set_energy_state(self, state: str) -> None:
+        """
+        设置UAV的能量状态（状态机）。
+        
+        Args:
+            state: "normal" | "return" | "charging" 之一
+        """
+        valid_states = {"normal", "return", "charging"}
+        if state not in valid_states:
+            raise ValueError(f"Invalid energy state: {state}. Must be one of {valid_states}")
+        self.energy_state = state
+    
+    def get_energy_state(self) -> str:
+        """
+        获取当前能量状态。
+        
+        Returns:
+            "normal" | "return" | "charging"
+        """
+        return self.energy_state
 
     def __repr__(self) -> str:
         """
