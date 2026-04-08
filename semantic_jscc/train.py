@@ -57,19 +57,20 @@ def main():
     parser.add_argument('--batch-size', type=int, default=128)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--latent-dim', type=int, default=256)
-    parser.add_argument('--snr-db', type=float, default=10.0)
+    parser.add_argument('--snr-db', '--sinr-db', dest='sinr_db', type=float, default=10.0,
+                        help='SINR value in dB for the channel model')
     parser.add_argument('--output-dir', type=str, default='semantic_jscc/checkpoints')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     train_loader, test_loader = get_dataloaders(batch_size=args.batch_size)
-    model = DeepJSCCModel(latent_dim=args.latent_dim, snr_db=args.snr_db).to(device)
+    model = DeepJSCCModel(latent_dim=args.latent_dim, sinr_db=args.sinr_db).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     criterion = nn.MSELoss()
 
     os.makedirs(args.output_dir, exist_ok=True)
     print('Device:', device)
-    print('Training DeepJSCC model with SNR =', args.snr_db, 'dB')
+    print('Training DeepJSCC model with SINR =', args.sinr_db, 'dB')
 
     best_loss = float('inf')
     for epoch in range(1, args.epochs + 1):
@@ -78,7 +79,7 @@ def main():
         print(f'Epoch {epoch}/{args.epochs} | Train MSE: {train_loss:.6f} | Val MSE: {val_loss:.6f}')
         if val_loss < best_loss:
             best_loss = val_loss
-            torch.save({'model_state': model.state_dict(), 'snr_db': args.snr_db}, os.path.join(args.output_dir, 'deepjscc_best.pth'))
+            torch.save({'model_state': model.state_dict(), 'sinr_db': args.sinr_db}, os.path.join(args.output_dir, 'deepjscc_best.pth'))
             print('Saved best checkpoint:', os.path.join(args.output_dir, 'deepjscc_best.pth'))
 
 

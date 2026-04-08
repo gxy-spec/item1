@@ -1,8 +1,8 @@
-from .networks import DeepJSCCEncoder, DeepJSCCDecoder, AWGNChannel, DeepJSCCModel
+from .networks import DeepJSCCEncoder, DeepJSCCDecoder, SINRChannel, DeepJSCCModel
 
 __all__ = [
     "DeepJSCCEncoder",
     "DeepJSCCDecoder",
-    "AWGNChannel",
+    "SINRChannel",
     "DeepJSCCModel",
 ]

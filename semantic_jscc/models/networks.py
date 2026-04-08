@@ -46,30 +46,31 @@ class DeepJSCCDecoder(nn.Module):
         return x
 
 
-class AWGNChannel(nn.Module):
-    """AWGN信道：在语义码字上加入高斯噪声，支持可调SNR。"""
+class SINRChannel(nn.Module):
+    """SINR信道：在语义码字上加入高斯噪声，支持可调SINR。"""
 
-    def __init__(self, snr_db=10.0):
+    def __init__(self, sinr_db=10.0):
         super().__init__()
-        self.snr_db = snr_db
+        self.sinr_db = sinr_db
 
-    def forward(self, x):
-        if not self.training and self.snr_db == float('inf'):
+    def forward(self, x, sinr_db=None):
+        sinr_db = self.sinr_db if sinr_db is None else sinr_db
+        if not self.training and sinr_db == float('inf'):
             return x
         power = torch.mean(x.pow(2), dim=[1, 2, 3], keepdim=True)
-        snr_linear = 10 ** (self.snr_db / 10.0)
-        noise_var = power / snr_linear
+        sinr_linear = 10 ** (sinr_db / 10.0)
+        noise_var = power / sinr_linear
         noise = torch.randn_like(x) * torch.sqrt(noise_var)
         return x + noise
 
 
 class DeepJSCCModel(nn.Module):
-    """完整DeepJSCC流程模型：编码器 -> 信道 -> 解码器。"""
+    """完整DeepJSCC流程模型：编码器 -> SINR信道 -> 解码器。"""
 
-    def __init__(self, latent_dim=256, snr_db=10.0):
+    def __init__(self, latent_dim=256, sinr_db=10.0):
         super().__init__()
         self.encoder = DeepJSCCEncoder(latent_dim=latent_dim)
-        self.channel = AWGNChannel(snr_db=snr_db)
+        self.channel = SINRChannel(sinr_db=sinr_db)
         self.decoder = DeepJSCCDecoder(latent_dim=latent_dim)
 
     def forward(self, x):
