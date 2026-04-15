@@ -48,3 +48,11 @@ ENV/
 .ipynb_checkpoints/
 
 data/
+
+# 训练/评估结果
+rl/results*/
+rl/plots*/
+semantic_jscc/results*/
+
+# 文档与下载文件
+*.pdf

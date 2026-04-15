@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import csv
@@ -7,6 +7,8 @@ import random
 import sys
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -17,6 +19,7 @@ if __package__ is None and __name__ == "__main__":
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from rl.aoi_energy_env import AoIEnvConfig, SingleUAVAoIEnv
+from rl.plot_training_curves import plot_training_curves
 
 
 class QNetwork(nn.Module):
@@ -43,11 +46,29 @@ class Transition:
     done: bool
 
 
+def build_unique_csv_path(output_dir: str | Path, csv_name: str) -> Path:
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    stem = Path(csv_name).stem
+    suffix = Path(csv_name).suffix or ".csv"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    candidate = output_dir / f"{stem}_{timestamp}{suffix}"
+    if not candidate.exists():
+        return candidate
+
+    index = 1
+    while True:
+        candidate = output_dir / f"{stem}_{timestamp}_{index}{suffix}"
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
 def train(args: argparse.Namespace) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     env = SingleUAVAoIEnv(AoIEnvConfig(max_steps=args.max_steps, num_ues=args.num_ues, seed=args.seed))
-    os.makedirs(args.output_dir, exist_ok=True)
-    csv_path = os.path.join(args.output_dir, args.csv_name)
+    csv_path = build_unique_csv_path(args.output_dir, args.csv_name)
 
     q_net = QNetwork(env.observation_dim, env.num_actions).to(device)
     target_net = QNetwork(env.observation_dim, env.num_actions).to(device)
@@ -60,7 +81,7 @@ def train(args: argparse.Namespace) -> None:
     reward_window = deque(maxlen=20)
     aoi_window = deque(maxlen=20)
 
-    with open(csv_path, "w", newline="", encoding="utf-8") as csv_file:
+    with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
         writer = csv.DictWriter(
             csv_file,
             fieldnames=[
@@ -173,7 +194,11 @@ def train(args: argparse.Namespace) -> None:
                 f"epsilon(探索率)={epsilon:.3f}"
             )
 
-    print(f"saved_csv(训练日志文件)={csv_path}")
+    print(f"saved_csv(training_metrics)={csv_path}")
+
+    if args.auto_plot:
+        plot_path = plot_training_curves(csv_path=csv_path, output_dir=args.plot_output_dir)
+        print(f"saved_plot(training_curves)={plot_path}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -192,6 +217,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output-dir", type=str, default="rl/results")
     parser.add_argument("--csv-name", type=str, default="training_metrics.csv")
+    parser.add_argument("--plot-output-dir", type=str, default="rl/plots")
+    parser.add_argument("--auto-plot", dest="auto_plot", action="store_true")
+    parser.add_argument("--no-auto-plot", dest="auto_plot", action="store_false")
+    parser.set_defaults(auto_plot=True)
     return parser
 
 

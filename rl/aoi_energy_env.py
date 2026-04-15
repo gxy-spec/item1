@@ -31,8 +31,12 @@ class AoIEnvConfig:
     packet_size_bits: float = 2e5
     lyapunov_v: float = 2.0
     drift_weight: float = 1.0
+    queue_weight: float = 0.35
     energy_guard_ratio: float = 0.25
-    depleted_penalty: float = 2.0
+    depleted_penalty: float = 10.0
+    success_reward: float = 1.5
+    invalid_service_penalty: float = 0.15
+    charge_step_penalty: float = 0.02
     seed: int = 42
 
 
@@ -136,6 +140,7 @@ class SingleUAVAoIEnv:
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, Dict]:
         charge_flag, movement_idx, service_idx = self.decode_action(int(action))
         prev_queue = self.virtual_energy_queue
+        prev_mean_aoi = float(np.mean(self.aoi))
 
         self._apply_action(charge_flag, movement_idx)
         self._advance_entities()
@@ -152,13 +157,26 @@ class SingleUAVAoIEnv:
         energy_info = self._update_energy(selected_ue, charge_flag)
 
         mean_aoi = float(np.mean(self.aoi))
-        self.virtual_energy_queue = max(
-            prev_queue + self.config.energy_guard_ratio * self.energy_model.E_max - self.uav.energy,
-            0.0,
-        )
+        self.virtual_energy_queue = self._update_virtual_energy_queue(prev_queue, energy_info)
         drift = 0.5 * (self.virtual_energy_queue ** 2 - prev_queue ** 2) / (self.energy_model.E_max ** 2)
         mean_aoi_norm = mean_aoi / (self.config.max_steps * self.config.delta_t)
-        reward = -(self.config.lyapunov_v * mean_aoi_norm + self.config.drift_weight * drift)
+        queue_norm = self.virtual_energy_queue / max(self.energy_model.E_max, 1.0)
+        aoi_improvement = (prev_mean_aoi - mean_aoi) / max(self.config.delta_t, 1.0)
+        reward = -(
+            self.config.lyapunov_v * mean_aoi_norm
+            + self.config.drift_weight * drift
+            + self.config.queue_weight * queue_norm
+        )
+
+        reward += aoi_improvement
+
+        if success:
+            reward += self.config.success_reward
+        elif selected_ue is not None:
+            reward -= self.config.invalid_service_penalty
+
+        if self.uav.energy_state in {"return", "charging", "resume"}:
+            reward -= self.config.charge_step_penalty
 
         if self.uav.energy_state == "depleted":
             reward -= self.config.depleted_penalty
@@ -175,10 +193,31 @@ class SingleUAVAoIEnv:
             "energy": float(self.uav.energy),
             "energy_state": self.uav.energy_state,
             "virtual_energy_queue": float(self.virtual_energy_queue),
+            "queue_norm": float(queue_norm),
             "drift": float(drift),
+            "aoi_improvement": float(aoi_improvement),
             **energy_info,
         }
         return self._get_observation(), float(reward), done, info
+
+    def _update_virtual_energy_queue(self, prev_queue: float, energy_info: Dict[str, float]) -> float:
+        """能量收支赤字队列。
+
+        设计原则：
+        1. 仅在非 charging 状态下累计赤字；
+        2. 赤字基于本时隙能量收支：E_fly + E_tx - E_charge；
+        3. charging 状态视为消债阶段，允许队列随充电量回落。
+        """
+        e_fly = float(energy_info["e_fly"])
+        e_tx = float(energy_info["e_tx"])
+        e_charge = float(energy_info["e_charge"])
+        energy_spent = e_fly + e_tx
+
+        if self.uav.energy_state == "charging":
+            return max(prev_queue - e_charge, 0.0)
+
+        balance_deficit = max(energy_spent - e_charge, 0.0)
+        return max(prev_queue + balance_deficit, 0.0)
 
     def _apply_action(self, charge_flag: int, movement_idx: int) -> None:
         if self.uav.energy_state in {"charging", "resume", "depleted"}:
