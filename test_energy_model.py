@@ -60,11 +60,11 @@ def test_flying_power():
         print(f"    ├─ Pi项(诱导)  : {breakdown['Pi_term']:.2f}W")
         print(f"    └─ Drag项(阻力): {breakdown['drag_term']:.2f}W")
     
-    print("\n✓ 飞行功率计算验证通过")
+    print("\n[OK] 飞行功率计算验证通过")
     print("  验证内容：")
     print("  1. 静止时功率 > 0（维持悬停需要能量）")
-    print("  2. 速度越高，功率消耗越大（三个项都随速度增加）")
-    print("  3. 诱导功率最大（约占50%），其次是叶片功率")
+    print("  2. 当前参数下，总飞行功率在低速到中速区间可能先下降，并非一定单调上升")
+    print("  3. 叶片功率、诱导功率和阻力功率的相对大小取决于速度区间与参数设置")
 
 
 def test_flying_energy():
@@ -85,7 +85,7 @@ def test_flying_energy():
     print(f"功率：{P:.2f} W")
     print(f"时间步长：{delta_t} s")
     print(f"飞行能耗：{E:.2f} J")
-    print(f"验证：{E:.2f} ≈ {P:.2f} * {delta_t} = {P*delta_t:.2f} ✓")
+    print(f"验证：{E:.2f} ≈ {P:.2f} * {delta_t} = {P*delta_t:.2f} [OK]")
 
 
 def test_tx_energy():
@@ -105,7 +105,7 @@ def test_tx_energy():
     for num_ue in [0, 1, 5, 10, 20]:
         E_tx = em.tx_energy(num_ue, delta_t)
         expected = em.p_tx * num_ue * delta_t
-        print(f"  {num_ue:2d} UE  →  {E_tx:.2f} J  (验证：{expected:.2f} J ✓)")
+        print(f"  {num_ue:2d} UE  →  {E_tx:.2f} J  (验证：{expected:.2f} J [OK])")
 
 
 def test_charging_energy():
@@ -138,7 +138,7 @@ def test_charging_energy():
     for g in test_gains:
         E_charge = em.charging_energy(g, delta_t)
         expected = em.eta * em.P_HAP * g * delta_t
-        print(f"  g_nH={g:.4f}  →  E_charge={E_charge:.4f} J  (验证：{expected:.4f} J ✓)")
+        print(f"  g_nH={g:.4f}  →  E_charge={E_charge:.4f} J  (验证：{expected:.4f} J [OK])")
 
 
 def test_battery_dynamics():
@@ -165,7 +165,7 @@ def test_battery_dynamics():
     print(f"充电能量：{E_charge} J")
     new_energy = em.update_battery(current_energy, E_fly, E_tx, E_charge)
     expected = current_energy - E_fly - E_tx + E_charge
-    print(f"更新后：{new_energy:.1f} J (期望：{expected:.1f} J) ✓")
+    print(f"更新后：{new_energy:.1f} J (期望：{expected:.1f} J) [OK]")
     
     # 场景2：能量过多（超过上限）
     print(f"\n【场景2：能量饱和（超过E_max）】")
@@ -177,7 +177,7 @@ def test_battery_dynamics():
     new_energy = em.update_battery(current_energy, E_fly, E_tx, E_charge)
     print(f"原始计算：{expected_raw:.1f} J")
     print(f"约束后：{new_energy:.1f} J (上限 {em.E_max} J)")
-    print(f"验证：{new_energy} = min({expected_raw:.1f}, {em.E_max}) ✓")
+    print(f"验证：{new_energy} = min({expected_raw:.1f}, {em.E_max}) [OK]")
     
     # 场景3：能量过少（下限）
     print(f"\n【场景3：能量耗尽（低于下限）】")
@@ -189,7 +189,7 @@ def test_battery_dynamics():
     new_energy = em.update_battery(current_energy, E_fly, E_tx, E_charge)
     print(f"原始计算：{expected_raw:.1f} J")
     print(f"约束后：{new_energy:.1f} J (下限 0 J)")
-    print(f"验证：max({expected_raw:.1f}, 0) = {new_energy} ✓")
+    print(f"验证：max({expected_raw:.1f}, 0) = {new_energy} [OK]")
 
 
 def test_state_machine():
@@ -225,11 +225,9 @@ def test_state_machine():
 def main():
     """运行所有测试。"""
     print("\n")
-    print("╔" + "=" * 68 + "╗")
-    print("║" + " " * 68 + "║")
-    print("║" + "  论文能量模型验证测试".center(68) + "║")
-    print("║" + " " * 68 + "║")
-    print("╚" + "=" * 68 + "╝")
+    print("=" * 72)
+    print("  论文能量模型验证测试".center(72))
+    print("=" * 72)
     
     try:
         test_flying_power()
@@ -242,20 +240,20 @@ def main():
         print("\n" + "=" * 70)
         print("【总体验证结果】")
         print("=" * 70)
-        print("\n✅ 所有能量模型公式已正确实现！")
+        print("\n[OK] 所有能量模型公式已正确实现！")
         print("\n验证清单：")
-        print("  ✓ P_fly：三项公式（叶片+诱导+阻力）")
-        print("  ✓ E_fly = P_fly * delta_t")
-        print("  ✓ E_tx = p_tx * num_ue * delta_t")
-        print("  ✓ E_charge = eta * P_HAP * g_nH * delta_t")
-        print("  ✓ E(t+1) = E(t) - E_fly - E_tx + E_charge")
-        print("  ✓ 电池约束：0 ≤ E(t) ≤ E_max")
-        print("  ✓ 状态机：normal → return → charging → normal")
+        print("  [OK] P_fly：三项公式（叶片+诱导+阻力）")
+        print("  [OK] E_fly = P_fly * delta_t")
+        print("  [OK] E_tx = p_tx * num_ue * delta_t")
+        print("  [OK] E_charge = eta * P_HAP * g_nH * delta_t")
+        print("  [OK] E(t+1) = E(t) - E_fly - E_tx + E_charge")
+        print("  [OK] 电池约束：0 <= E(t) <= E_max")
+        print("  [OK] 状态机阈值：return_threshold / recovery_threshold 可正常工作")
         
         print("\n可以安全集成到仿真器中！")
         
     except Exception as e:
-        print(f"\n❌ 验证失败！")
+        print(f"\n[ERROR] 验证失败！")
         print(f"错误信息：{str(e)}")
         import traceback
         traceback.print_exc()

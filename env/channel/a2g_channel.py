@@ -88,12 +88,16 @@ class A2GChannel:
                 covered.append(ue)
         return covered
 
-    def compute_sinr_and_rate(self, uav, ue_list: List) -> List[dict]:
-        """计算UAV覆盖区内每个UE的SINR和速率。"""
+    def compute_sinr_and_rate(self, uav, ue_list: List, interfering_uavs: List = None) -> List[dict]:
+        """计算UAV覆盖区内每个UE的SINR和速率。
+
+        这里将其他UAV视为共信道干扰源，与热力图中的SINR定义保持一致。
+        """
         covered = self.find_covered_ues(uav, ue_list)
         if len(covered) == 0:
             return []
 
+        interfering_uavs = [] if interfering_uavs is None else interfering_uavs
         gains = [self.power_gain(uav, ue) for ue in covered]
         power = self.transmit_power
         results = []
@@ -101,10 +105,11 @@ class A2GChannel:
         for idx, ue in enumerate(covered):
             signal = power * gains[idx] ** 2
             interference = 0.0
-            for jdx, _ in enumerate(covered):
-                if jdx == idx:
+            for other_uav in interfering_uavs:
+                if other_uav is uav:
                     continue
-                interference += power * gains[jdx] ** 2
+                interference_gain = self.power_gain(other_uav, ue)
+                interference += power * interference_gain ** 2
             sinr = signal / (interference + self.noise_power)
             rate = self.bandwidth * math.log2(1.0 + sinr)
             results.append(

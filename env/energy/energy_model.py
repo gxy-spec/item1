@@ -32,11 +32,11 @@ class EnergyModel:
         eta: float = 0.8,                      # 能量转换效率（无量纲）
         P_HAP: float = 300.0,                  # HAP发射功率（W）- 提高功率以增强充电效果
         # 电池参数
-        E_max: float = 1000.0,                 # 最大电池容量（J）
+        E_max: float = 5000.0,                 # 最大电池容量（J）
         # 状态转换阈值
         return_threshold: float = 0.2,         # 返回充电的电量阈值（相对E_max）
-        recovery_threshold: float = 0.9,       # 恢复正常运动的电量阈值（相对E_max）
-        charging_distance: float = 20.0,       # 充电距离阈值（m）- 更接近时才开始充电
+        recovery_threshold: float = 0.8,       # 恢复正常运动的电量阈值（相对E_max）
+        charging_distance: float = 30.0,       # 充电距离阈值（m）
     ):
         """
         初始化能量模型参数。

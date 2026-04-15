@@ -107,6 +107,9 @@ class Simulator:
             uav.energy_max = self.energy_model.E_max
             uav.energy = self.energy_model.E_max  # 初始满电
 
+        self.current_frame = 0
+        self._snapshot_initial_state()
+
         # 初始化matplotlib图形
         self.fig, self.ax = plt.subplots(figsize=(10, 8))
         self._configure_axes()  # 配置坐标轴
@@ -137,14 +140,145 @@ class Simulator:
         self.energy_state_history = []  # 每帧能量状态
         self.metrics_history = []       # 每帧性能指标
 
-        # 初始化性能窗口和曲线
-        self._init_performance_figure()
-
         # 初始化热力图窗口
         self._init_heatmap_figure()
         
         # 初始化能量窗口
         self._init_energy_figure()
+
+    def _snapshot_initial_state(self) -> None:
+        """保存初始场景，用于reset。"""
+        self.initial_uav_states = [
+            {
+                "position": uav.position.copy(),
+                "velocity": uav.velocity.copy(),
+                "energy": uav.energy,
+                "energy_state": uav.energy_state,
+            }
+            for uav in self.uav_list
+        ]
+        self.initial_ue_positions = [ue.position.copy() for ue in self.ue_list]
+
+    def _reset_histories(self) -> None:
+        """清空历史缓存。"""
+        self.time_history = []
+        self.avg_a2g_sinr_history = []
+        self.avg_a2a_snr_history = []
+        self.avg_rate_history = []
+        self.uav_sinr_history = {uav.uid: [] for uav in self.uav_list}
+        self.uav_rate_history = {uav.uid: [] for uav in self.uav_list}
+        self.energy_history = {uav.uid: [] for uav in self.uav_list}
+        self.flying_energy_history = {uav.uid: [] for uav in self.uav_list}
+        self.tx_energy_history = {uav.uid: [] for uav in self.uav_list}
+        self.charging_energy_history = {uav.uid: [] for uav in self.uav_list}
+        self.uav_position_history = []
+        self.ue_position_history = []
+        self.energy_state_history = []
+        self.metrics_history = []
+
+    def reset(self) -> dict:
+        """恢复到初始状态，并返回当前观测。"""
+        for uav, state in zip(self.uav_list, self.initial_uav_states):
+            uav.position = state["position"].copy()
+            uav.velocity = state["velocity"].copy()
+            uav.energy = state["energy"]
+            uav.energy_state = state["energy_state"]
+
+        for ue, position in zip(self.ue_list, self.initial_ue_positions):
+            ue.position = position.copy()
+
+        self.current_frame = 0
+        self._reset_histories()
+        return self.get_observation()
+
+    def get_observation(self) -> dict:
+        """返回当前场景观测。"""
+        return {
+            "time": self.current_frame * self.delta_t,
+            "uavs": [
+                {
+                    "uid": uav.uid,
+                    "position": uav.position.copy(),
+                    "velocity": uav.velocity.copy(),
+                    "energy": float(uav.energy),
+                    "energy_state": uav.energy_state,
+                }
+                for uav in self.uav_list
+            ],
+            "ues": [
+                {
+                    "uid": ue.uid,
+                    "position": ue.position.copy(),
+                }
+                for ue in self.ue_list
+            ],
+            "hap": self.hap.position.copy(),
+        }
+
+    def _prepare_uav_motion(self) -> None:
+        """依据当前状态为UAV准备本时隙动作。"""
+        for uav in self.uav_list:
+            if uav.energy_state == "depleted":
+                uav.velocity[:] = 0.0
+                continue
+
+            if uav.energy_state not in {"return", "resume"}:
+                continue
+
+            if uav.energy_state == "return":
+                target = self._get_charging_waypoint(uav)
+                arrival_state = "charging"
+            else:
+                target = uav.home_position
+                arrival_state = "normal"
+
+            diff = target - uav.position
+            distance = np.linalg.norm(diff)
+            if distance < self.energy_model.charging_distance:
+                uav.energy_state = arrival_state
+                uav.velocity[:] = 0.0
+                continue
+
+            direction = diff / (distance + 1e-6)
+            uav.velocity = direction * uav.vmax
+
+    def _get_charging_waypoint(self, uav: UAV) -> np.ndarray:
+        """返回UAV可实际到达的充电等待点。"""
+        charging_height = min(uav.hmax, max(uav.hmin, self.hap.height - 300.0))
+        return np.array([self.hap.xy[0], self.hap.xy[1], charging_height], dtype=float)
+
+    def _estimate_return_energy_budget(self, uav: UAV) -> float:
+        """估计UAV安全返航到充电点所需的最低能量预算。"""
+        target = self._get_charging_waypoint(uav)
+        distance = np.linalg.norm(target - uav.position)
+        travel_time = distance / max(uav.vmax, 1e-6)
+        cruise_velocity = target - uav.position
+        norm = np.linalg.norm(cruise_velocity)
+        if norm > 1e-6:
+            cruise_velocity = cruise_velocity / norm * uav.vmax
+        else:
+            cruise_velocity = np.zeros(3, dtype=float)
+
+        travel_energy = self.energy_model.flying_energy(cruise_velocity, travel_time)
+        reserve_energy = 0.05 * self.energy_model.E_max
+        return min(self.energy_model.E_max, travel_energy + reserve_energy)
+
+    def _advance_entities(self) -> None:
+        """推进一个时隙内的节点运动。"""
+        self._prepare_uav_motion()
+        for uav in self.uav_list:
+            uav.step(self.delta_t)
+        for ue in self.ue_list:
+            ue.step(self.delta_t)
+
+    def step(self) -> Tuple[dict, dict]:
+        """推进一个时隙，并返回观测与性能指标。"""
+        frame = self.current_frame
+        self._advance_entities()
+        metrics = self._compute_channel_metrics(frame)
+        self._update_energy(metrics)
+        self.current_frame += 1
+        return self.get_observation(), metrics
 
     def _configure_axes(self) -> None:
         """
@@ -272,20 +406,19 @@ class Simulator:
         
         包含两个子图：
         1. 电量曲线（各UAV的E(t)）
-        2. 能量分解堆积图（能耗和充电）
+        2. 能量分解图（能耗和充电分量）
         """
         self.fig4, (self.ax_energy, self.ax_energy_breakdown) = plt.subplots(
-            2, 1, figsize=(10, 8), sharex=True
+            2, 1, figsize=(12, 8), sharex=True
         )
         self.fig4.suptitle("UAV Energy Management", fontsize=14)
         
-        # ========== 子图1：电量曲线 ==========
+        # 子图1：电量曲线
         self.ax_energy.set_ylabel("Energy (J)")
         self.ax_energy.set_title("UAV Battery Capacity Over Time")
         self.ax_energy.grid(True, linestyle="--", alpha=0.4)
-        self.ax_energy.set_ylim(0, self.energy_model.E_max * 1.1)  # 设置Y轴范围
+        self.ax_energy.set_ylim(0, self.energy_model.E_max * 1.1)
         
-        # 为每个UAV创建电量曲线
         self.energy_lines = {}
         colors = ['tab:red', 'tab:blue', 'tab:green', 'tab:orange', 'tab:purple']
         for i, uav in enumerate(self.uav_list):
@@ -298,20 +431,19 @@ class Simulator:
         
         self.ax_energy.legend(loc="upper right", fontsize=10)
         
-        # ========== 子图2：能量分解 ==========
+        # 子图2：能量分解
         self.ax_energy_breakdown.set_ylabel("Energy (J)")
         self.ax_energy_breakdown.set_xlabel("Time (s)")
         self.ax_energy_breakdown.set_title("Energy Components (Flying + TX - Charging)")
         self.ax_energy_breakdown.grid(True, linestyle="--", alpha=0.4)
-        self.ax_energy_breakdown.set_ylim(0, 100)  # 设置合适的Y轴范围
         
-        # 为能量分解创建明确的线引用
         self.flying_energy_line, = self.ax_energy_breakdown.plot([], [], c='orange', label='Flying Energy', linewidth=2.5, alpha=0.8)
         self.tx_energy_line, = self.ax_energy_breakdown.plot([], [], c='red', label='TX Energy (x10)', linewidth=2.5, alpha=0.8)
         self.charging_energy_line, = self.ax_energy_breakdown.plot([], [], c='green', label='Charging Energy', linewidth=2.5, alpha=0.8)
         self.ax_energy_breakdown.legend(loc="upper right", fontsize=10)
         
         self.fig4.tight_layout()
+
 
     def _init_artists(self) -> List:
         """
@@ -403,11 +535,7 @@ class Simulator:
         Returns:
             需要更新的艺术家对象列表。
         """
-        # 更新所有UAV和UE的位置
-        for uav in self.uav_list:
-            uav.step(self.delta_t)
-        for ue in self.ue_list:
-            ue.step(self.delta_t)
+        _, metrics = self.step()
 
         # 获取新位置
         uav_positions = np.array([uav.xy for uav in self.uav_list])
@@ -421,12 +549,9 @@ class Simulator:
         for circle, uav in zip(self.service_circles, self.uav_list):
             circle.center = tuple(uav.xy)
 
-        # 计算信道性能指标
-        metrics = self._compute_channel_metrics(frame)
-
         # 更新高度显示文本与当前性能指标
         # 显示格式更清晰
-        time_str = f"Time: {frame * self.delta_t:.1f}s"
+        time_str = f"Time: {self.time_history[-1]:.1f}s"
         altitudes = " | ".join([f"UAV{uav.uid}: {uav.height:.0f}m" for uav in self.uav_list])
         uav_energy_text = " | ".join([f"E{uav.uid}: {uav.energy:.0f}J ({uav.energy_state})" for uav in self.uav_list])
         uav_sinr_text = " | ".join([f"SINR{uav.uid}: {metrics['uav_sinrs'][uav.uid]:.2f}" for uav in self.uav_list])
@@ -434,9 +559,6 @@ class Simulator:
         self.altitude_text.set_text(
             f"{time_str}  |  HAP: {self.hap.height:.0f}m\nAlt: {altitudes}\n{uav_energy_text}\n{uav_sinr_text}\n{uav_rate_text} Mbps"
         )
-
-        # ============ 计算和更新能量 ============
-        self._update_energy(metrics)
 
         # 更新能量窗口
         self._update_energy_plot()
@@ -454,7 +576,7 @@ class Simulator:
         uav_rates = {}
 
         for uav in self.uav_list:
-            a2g_results = self.a2g_channel.compute_sinr_and_rate(uav, self.ue_list)
+            a2g_results = self.a2g_channel.compute_sinr_and_rate(uav, self.ue_list, self.uav_list)
             uav_sinrs[uav.uid] = float(np.mean([item["sinr"] for item in a2g_results])) if a2g_results else float('nan')
             uav_rates[uav.uid] = float(np.mean([item["rate"] for item in a2g_results])) if a2g_results else float('nan')
             all_sinrs.extend([item["sinr"] for item in a2g_results])
@@ -504,22 +626,31 @@ class Simulator:
             metrics: 包含SINR、速率等指标的字典
         """
         for uav in self.uav_list:
+            a2a_metrics = self.a2a_channel.compute_link_metrics(uav, self.hap)
+            channel_gain_nH = a2a_metrics["gain"]
+            return_energy_budget = self._estimate_return_energy_budget(uav)
+
             # ========== 步骤1/2：根据状态计算飞行和通信能耗 ==========
             if uav.energy_state == "charging":
                 # 充电状态时停靠，不再消耗飞行和通信功率
                 E_fly = 0.0
                 E_tx = 0.0
+                E_charge = self.energy_model.charging_energy(channel_gain_nH, self.delta_t)
+
+                # 停靠充电时提供一个更高的保底功率，避免长时间停滞在充电点。
+                min_charging_power = 200.0
+                min_E_charge = min_charging_power * self.delta_t
+                E_charge = max(E_charge, min_E_charge)
+            elif uav.energy_state == "depleted":
+                E_fly = 0.0
+                E_tx = 0.0
+                E_charge = 0.0
             else:
                 E_fly = self.energy_model.flying_energy(uav.velocity, self.delta_t)
                 covered_ues = self.a2g_channel.find_covered_ues(uav, self.ue_list)
                 num_covered = len(covered_ues)
                 E_tx = self.energy_model.tx_energy(num_covered, self.delta_t)
-            
-            # ========== 步骤3-4：计算充电能量 ==========
-            # 从A2A信道获取UAV到HAP的链路增益
-            a2a_metrics = self.a2a_channel.compute_link_metrics(uav, self.hap)
-            channel_gain_nH = a2a_metrics["gain"]  # 幅度（线性度）
-            E_charge = self.energy_model.charging_energy(channel_gain_nH, self.delta_t)
+                E_charge = self.energy_model.charging_energy(channel_gain_nH, self.delta_t)
             
             # ========== 步骤5：更新电池容量 ==========
             uav.energy = self.energy_model.update_battery(
@@ -528,50 +659,49 @@ class Simulator:
                 E_tx,
                 E_charge,
             )
-            
-            # ========== 步骤6a：状态机逻辑 - 判断是否需要返回充电 ==========
-            if self.energy_model.should_return_to_charging(uav.energy):
-                if uav.energy_state != "charging":
-                    uav.energy_state = "return"
-            
-            # ========== 步骤6b：处理"return"状态 - 飞向HAP ==========
-            if uav.energy_state == "return":
-                # 计算UAV到HAP的三维距离
-                diff = self.hap.position - uav.position
-                distance = np.linalg.norm(diff)
-                
-                # 如果已接近HAP，进入充电状态
-                if distance < self.energy_model.charging_distance:
+
+            charging_waypoint = self._get_charging_waypoint(uav)
+            distance_to_charge = np.linalg.norm(charging_waypoint - uav.position)
+
+            if uav.energy <= 0.0 and uav.energy_state not in {"charging", "resume"}:
+                if distance_to_charge < self.energy_model.charging_distance:
                     uav.energy_state = "charging"
                 else:
-                    # 飞向HAP：修改速度指向HAP，使用最大速度
-                    direction = diff / (distance + 1e-6)
-                    uav.velocity = direction * uav.vmax
-            
+                    uav.energy_state = "depleted"
+                    uav.velocity[:] = 0.0
+                    self.energy_history[uav.uid].append(uav.energy)
+                    self.flying_energy_history[uav.uid].append(E_fly)
+                    self.tx_energy_history[uav.uid].append(E_tx)
+                    self.charging_energy_history[uav.uid].append(E_charge)
+                    continue
+             
+            # ========== 步骤6a：状态机逻辑 - 判断是否需要返回充电 ==========
+            dynamic_return_threshold = max(
+                self.energy_model.return_threshold * self.energy_model.E_max,
+                return_energy_budget,
+            )
+            if uav.energy <= dynamic_return_threshold:
+                if uav.energy_state not in {"charging", "depleted", "return"}:
+                    uav.energy_state = "return"
+             
+            # ========== 步骤6b：处理"return"状态 - 飞向HAP ==========
+            if uav.energy_state == "return":
+                if distance_to_charge < self.energy_model.charging_distance:
+                    uav.energy_state = "charging"
+             
             # ========== 步骤6c：处理"charging"状态 - 停止运动 ==========
             elif uav.energy_state == "charging":
                 # 停止水平运动，垂直速度为0
-                uav.velocity[:2] = 0.0
-                uav.velocity[2] = 0.0
-                
-                # 使用能量模型计算充电能量（基于信道增益）
-                # 从A2A信道获取UAV到HAP的链路增益
-                a2a_metrics = self.a2a_channel.compute_link_metrics(uav, self.hap)
-                channel_gain_nH = a2a_metrics["gain"]  # 幅度（线性度）
-                E_charge = self.energy_model.charging_energy(channel_gain_nH, self.delta_t)
-                
-                # 如果信道增益太小，使用最小充电功率保证充电
-                min_charging_power = 20.0  # 20W最小充电功率
-                min_E_charge = min_charging_power * self.delta_t
-                E_charge = max(E_charge, min_E_charge)
-                
-                uav.energy = min(self.energy_model.E_max, uav.energy + E_charge)
-                
-                # 检查是否充满电，可以恢复正常
+                uav.velocity[:] = 0.0
                 if self.energy_model.should_resume_normal(uav.energy):
-                    uav.energy_state = "normal"
+                    uav.energy_state = "resume"
             
-            # ========== 步骤6d：处理"normal"状态 - 正常随机运动 ==========
+            # ========== 步骤6d：处理"resume"状态 - 离开充电点恢复任务 ==========
+            elif uav.energy_state == "resume":
+                if np.linalg.norm(uav.home_position - uav.position) < self.energy_model.charging_distance:
+                    uav.energy_state = "normal"
+             
+            # ========== 步骤6e：处理"normal"状态 - 正常随机运动 ==========
             elif uav.energy_state == "normal":
                 # 正常运动由uav.step()处理
                 pass
@@ -715,6 +845,8 @@ class Simulator:
             interval: 帧间隔（毫秒）。
             save_path: 如果提供，将动画保存为文件而不是实时显示。
         """
+        self.reset()
+
         if save_path is not None:
             # 如果要保存为文件，使用非GUI后端
             plt.switch_backend('Agg')
@@ -722,28 +854,16 @@ class Simulator:
             # 运行仿真以收集数据
             print(f"正在运行仿真 ({frames}帧)...")
             
-            for frame in range(frames):
-                # 保存当前状态
+            for _ in range(frames):
+                _, metrics = self.step()
                 uav_positions = [uav.position.copy() for uav in self.uav_list]
                 ue_positions = [ue.position.copy() for ue in self.ue_list]
                 energy_states = [(uav.uid, uav.energy_state, uav.energy) for uav in self.uav_list]
-                
+
                 self.uav_position_history.append(uav_positions)
                 self.ue_position_history.append(ue_positions)
                 self.energy_state_history.append(energy_states)
-
-                # 更新位置
-                for uav in self.uav_list:
-                    uav.step(self.delta_t)
-                for ue in self.ue_list:
-                    ue.step(self.delta_t)
-
-                # 计算并记录性能指标
-                metrics = self._compute_channel_metrics(frame)
                 self.metrics_history.append(metrics)
-                
-                # 更新能量
-                self._update_energy(metrics)
 
             print(f"✓ 仿真完成 ({len(self.uav_position_history)}帧)")
 
@@ -871,7 +991,7 @@ def build_default_simulation() -> Simulator:
         配置好的Simulator实例。
     """
     area_bounds = (0.0, 1000.0, 0.0, 1000.0)  # 仿真区域
-    hap = HAP(position=(500.0, 500.0, 220.0))  # HAP位置（进一步降低高度）
+    hap = HAP(position=(500.0, 500.0, 600.0))  # HAP位置：高于UAV工作高度的补能平台
 
     # 创建UAV列表
     uav_list = []
@@ -946,7 +1066,7 @@ if __name__ == "__main__":
             # 保存为动画文件模式
             save_path = sys.argv[2] if len(sys.argv) > 2 else "simulation.gif"
             print(f"正在生成动画文件: {save_path}")
-            simulator.run(frames=100, interval=100, save_path=save_path)
+            simulator.run(frames=200, interval=100, save_path=save_path)
         elif sys.argv[1] == "--image":
             # 保存静态图像模式（仅生成能量图）
             image_path = sys.argv[2] if len(sys.argv) > 2 else "energy.png"
@@ -956,16 +1076,9 @@ if __name__ == "__main__":
             plt.switch_backend('Agg')
             print("正在运行仿真以收集能量数据...")
             
-            for frame in range(200):  # 运行200帧来收集数据
-                # 更新位置
-                for uav in simulator.uav_list:
-                    uav.step(simulator.delta_t)
-                for ue in simulator.ue_list:
-                    ue.step(simulator.delta_t)
-
-                # 计算性能指标和能量
-                metrics = simulator._compute_channel_metrics(frame)
-                simulator._update_energy(metrics)
+            simulator.reset()
+            for _ in range(300):  # 运行更多帧来更完整地展示返航、充电与恢复
+                simulator.step()
 
             print(f"收集了 {len(simulator.time_history)} 个数据点")
 
@@ -996,7 +1109,7 @@ if __name__ == "__main__":
         print("如果在VS Code中无法显示，请使用以下命令:")
         print("  python env/simulator.py --image energy.png   # 生成能量管理图")
         try:
-            simulator.run(frames=500, interval=120)
+            simulator.run(frames=700, interval=120)
         except Exception as e:
             print(f"实时显示失败: {e}")
             print("请尝试以下命令生成能量图:")
@@ -1007,13 +1120,9 @@ if __name__ == "__main__":
             # 运行仿真收集数据
             plt.switch_backend('Agg')
             print("正在运行仿真以收集数据...")
-            for frame in range(200):  # 运行200帧来收集数据
-                for uav in simulator.uav_list:
-                    uav.step(simulator.delta_t)
-                for ue in simulator.ue_list:
-                    ue.step(simulator.delta_t)
-                metrics = simulator._compute_channel_metrics(frame)
-                simulator._update_energy(metrics)
+            simulator.reset()
+            for _ in range(300):  # 运行更多帧来更完整地展示返航、充电与恢复
+                simulator.step()
 
             print(f"收集了 {len(simulator.time_history)} 个数据点")
 

@@ -45,7 +45,8 @@ class UAV:
 
         # ============ 能量管理属性 ============
         # 状态机
-        self.energy_state = "normal"  # "normal" | "return" | "charging"
+        self.energy_state = "normal"  # "normal" | "return" | "charging" | "resume" | "depleted"
+        self.home_position = self.position.copy()
         
         # 能量相关（将在simulator中初始化）
         self.energy = 0.0  # 当前电量（J）
@@ -111,10 +112,10 @@ class UAV:
             delta_t: 时间步长。
         """
         # 根据能量状态调整运动行为
-        if self.energy_state == "return":
+        if self.energy_state in {"return", "resume"}:
             # 返回充电状态：直接飞向HAP，不随机扰动
             pass  # 速度已在simulator中设置
-        elif self.energy_state == "charging":
+        elif self.energy_state in {"charging", "depleted"}:
             # 充电状态：完全停止
             self.velocity[:] = 0.0
         else:
@@ -221,9 +222,9 @@ class UAV:
         设置UAV的能量状态（状态机）。
         
         Args:
-            state: "normal" | "return" | "charging" 之一
+            state: "normal" | "return" | "charging" | "resume" | "depleted" 之一
         """
-        valid_states = {"normal", "return", "charging"}
+        valid_states = {"normal", "return", "charging", "resume", "depleted"}
         if state not in valid_states:
             raise ValueError(f"Invalid energy state: {state}. Must be one of {valid_states}")
         self.energy_state = state
