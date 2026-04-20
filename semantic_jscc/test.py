@@ -54,6 +54,7 @@ def load_checkpoint(model, checkpoint_path, device):
         "sinr_db": checkpoint.get("sinr_db", checkpoint.get("snr_db", 10.0)),
         "keep_ratios": checkpoint.get("keep_ratios", [1.0]),
         "latent_dim": checkpoint.get("latent_dim", None),
+        "mask_mode": checkpoint.get("mask_mode", "uniform"),
     }
 
 
@@ -111,6 +112,13 @@ def main():
         default=None,
         help="Output directory. If not specified, creates timestamped directory under semantic_jscc/results/",
     )
+    parser.add_argument(
+        "--mask-mode",
+        type=str,
+        default=None,
+        choices=["uniform", "prefix"],
+        help="Optional mask mode override. Defaults to checkpoint mask mode.",
+    )
     args = parser.parse_args()
 
     if args.output_dir is None:
@@ -121,6 +129,10 @@ def main():
     test_loader = get_dataloaders(batch_size=128)
     model = DeepJSCCModel(latent_dim=args.latent_dim, sinr_db=args.sinr_db).to(device)
     checkpoint_meta = load_checkpoint(model, args.checkpoint, device)
+    if args.mask_mode is not None:
+        model.mask_mode = args.mask_mode
+    else:
+        model.mask_mode = checkpoint_meta["mask_mode"]
 
     keep_ratios = parse_ratio_list(args.keep_ratios) if args.keep_ratios is not None else checkpoint_meta["keep_ratios"]
 
@@ -128,6 +140,7 @@ def main():
     print("Loaded checkpoint:", args.checkpoint)
     print("Testing with SINR =", args.sinr_db, "dB")
     print("Keep ratios:", keep_ratios)
+    print("Mask mode:", model.mask_mode)
 
     visualize(model, test_loader, device, args.sinr_db, keep_ratios, args.output_dir)
 

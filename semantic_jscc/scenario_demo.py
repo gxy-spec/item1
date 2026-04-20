@@ -34,6 +34,7 @@ def main() -> None:
     print(f"sinr_db={result.sinr_db:.2f}")
     print(f"requested_compression_ratio={result.requested_compression_ratio:.3f}")
     print(f"effective_compression_ratio={result.compression_ratio:.3f}")
+    print(f"mask_mode={result.mask_mode}")
     print(f"mse={result.mse:.6f}")
     print(f"psnr={result.psnr:.3f}")
     print(f"semantic_quality={result.semantic_quality:.3f}")

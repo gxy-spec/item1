@@ -29,6 +29,7 @@ class SemanticTransmissionResult:
     compression_ratio: float
     requested_compression_ratio: float
     sinr_db: float
+    mask_mode: str
 
 
 class DeepJSCCScenarioModule:
@@ -39,22 +40,37 @@ class DeepJSCCScenarioModule:
         checkpoint_path: str | Path = "semantic_jscc/checkpoints/deepjscc_best.pth",
         latent_dim: int = 256,
         default_sinr_db: float = 10.0,
+        mask_mode: str = "uniform",
         device: str | torch.device | None = None,
         strict_checkpoint: bool = False,
     ) -> None:
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
-        self.model = DeepJSCCModel(latent_dim=latent_dim, sinr_db=default_sinr_db).to(self.device)
-        self.model.eval()
         self.checkpoint_path = Path(checkpoint_path)
         self.checkpoint_loaded = False
+        checkpoint_mask_mode = mask_mode
 
         if self.checkpoint_path.exists():
             checkpoint = torch.load(self.checkpoint_path, map_location=self.device)
+            checkpoint_mask_mode = checkpoint.get("mask_mode", checkpoint_mask_mode)
+            checkpoint_latent_dim = checkpoint.get("latent_dim", latent_dim)
+            self.model = DeepJSCCModel(
+                latent_dim=checkpoint_latent_dim,
+                sinr_db=default_sinr_db,
+                mask_mode=checkpoint_mask_mode,
+            ).to(self.device)
             state_dict = checkpoint.get("model_state", checkpoint)
             self.model.load_state_dict(state_dict, strict=False)
             self.checkpoint_loaded = True
         elif strict_checkpoint:
             raise FileNotFoundError(f"Checkpoint not found: {self.checkpoint_path}")
+        else:
+            self.model = DeepJSCCModel(
+                latent_dim=latent_dim,
+                sinr_db=default_sinr_db,
+                mask_mode=checkpoint_mask_mode,
+            ).to(self.device)
+
+        self.model.eval()
 
     @staticmethod
     def _normalize_task_weights(task_weights: Any) -> SemanticTaskWeights:
@@ -145,4 +161,5 @@ class DeepJSCCScenarioModule:
             compression_ratio=float(details["compression_ratio"]),
             requested_compression_ratio=float(details["requested_compression_ratio"]),
             sinr_db=float(details["sinr_db"]),
+            mask_mode=str(details["mask_mode"]),
         )

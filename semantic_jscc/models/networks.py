@@ -78,7 +78,7 @@ class SINRChannel(nn.Module):
 class DeepJSCCModel(nn.Module):
     """完整DeepJSCC流程模型：编码器 -> SINR信道 -> 解码器。"""
 
-    def __init__(self, latent_dim=256, sinr_db=10.0):
+    def __init__(self, latent_dim=256, sinr_db=10.0, mask_mode="uniform"):
         super().__init__()
         if latent_dim % 16 != 0:
             raise ValueError("latent_dim must be divisible by 16")
@@ -86,14 +86,31 @@ class DeepJSCCModel(nn.Module):
         self.channel = SINRChannel(sinr_db=sinr_db)
         self.decoder = DeepJSCCDecoder(latent_dim=latent_dim)
         self.latent_dim = latent_dim
+        self.mask_mode = str(mask_mode).lower()
+        if self.mask_mode not in {"prefix", "uniform"}:
+            raise ValueError("mask_mode must be 'prefix' or 'uniform'")
 
-    @staticmethod
-    def _build_channel_mask(z, compression_ratio):
+    def _build_channel_mask(self, z, compression_ratio):
         compression_ratio = float(max(0.0, min(1.0, compression_ratio)))
         total_channels = z.shape[1]
         active_channels = max(1, min(total_channels, int(round(total_channels * compression_ratio))))
         mask = torch.zeros_like(z)
-        mask[:, :active_channels, :, :] = 1.0
+        if self.mask_mode == "prefix" or active_channels == total_channels:
+            selected_indices = torch.arange(active_channels, device=z.device)
+        else:
+            selected_indices = torch.linspace(
+                0,
+                total_channels - 1,
+                steps=active_channels,
+                device=z.device,
+            ).round().long().unique(sorted=True)
+            if selected_indices.numel() < active_channels:
+                full_indices = torch.arange(total_channels, device=z.device)
+                missing = active_channels - selected_indices.numel()
+                remaining = full_indices[~torch.isin(full_indices, selected_indices)]
+                selected_indices = torch.cat([selected_indices, remaining[:missing]], dim=0)
+                selected_indices = selected_indices.sort().values
+        mask[:, selected_indices, :, :] = 1.0
         return mask, active_channels
 
     def forward(self, x, sinr_db=None, compression_ratio=1.0, return_details=False):
@@ -117,5 +134,6 @@ class DeepJSCCModel(nn.Module):
             "total_symbols": int(total_symbols),
             "transmitted_symbols": int(transmitted_symbols),
             "sinr_db": float(self.channel.sinr_db if sinr_db is None else sinr_db),
+            "mask_mode": self.mask_mode,
         }
         return x_hat, details

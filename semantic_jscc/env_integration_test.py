@@ -13,6 +13,8 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torchvision
+import torchvision.transforms as transforms
 
 matplotlib.use("Agg")
 
@@ -50,9 +52,25 @@ def parse_compression_schedule(text: str) -> list[float]:
     return values
 
 
-def build_reference_image(seed: int) -> torch.Tensor:
+def build_random_reference_image(seed: int) -> torch.Tensor:
     generator = torch.Generator().manual_seed(seed)
     return torch.rand((3, 32, 32), generator=generator)
+
+
+def load_cifar_test_image(sample_index: int) -> tuple[torch.Tensor, int]:
+    transform = transforms.Compose([transforms.ToTensor()])
+    dataset = torchvision.datasets.CIFAR10(root="./data", train=False, download=True, transform=transform)
+    image, label = dataset[sample_index % len(dataset)]
+    return image, int(label)
+
+
+def load_reference_image(args: argparse.Namespace) -> tuple[torch.Tensor, str]:
+    if args.image_source == "random":
+        image = build_random_reference_image(args.seed)
+        return image, f"random(seed={args.seed})"
+
+    image, label = load_cifar_test_image(args.sample_index)
+    return image, f"cifar10_test(index={args.sample_index}, label={label})"
 
 
 def choose_target_link(simulator, uav_id: int) -> tuple[object, dict | None]:
@@ -135,7 +153,8 @@ def run_integration_test(args: argparse.Namespace) -> tuple[Path, Path]:
     simulator.reset()
 
     module = DeepJSCCScenarioModule(checkpoint_path=args.checkpoint)
-    reference_image = build_reference_image(seed=args.seed)
+    reference_image, image_description = load_reference_image(args)
+    args.image_description = image_description
     ratios = parse_compression_schedule(args.compression_schedule)
     output_dir = Path(args.output_dir)
     csv_path = ensure_unique_path(output_dir, prefix=args.csv_prefix, suffix=".csv")
@@ -143,6 +162,7 @@ def run_integration_test(args: argparse.Namespace) -> tuple[Path, Path]:
     fieldnames = [
         "step",
         "time",
+        "image_source",
         "uav_id",
         "uav_energy",
         "uav_energy_state",
@@ -189,6 +209,7 @@ def run_integration_test(args: argparse.Namespace) -> tuple[Path, Path]:
                     row = {
                         "step": step,
                         "time": observation["time"],
+                        "image_source": args.image_description,
                         "uav_id": uav.uid,
                         "uav_energy": float(uav.energy),
                         "uav_energy_state": uav.energy_state,
@@ -230,6 +251,7 @@ def run_integration_test(args: argparse.Namespace) -> tuple[Path, Path]:
                     row = {
                         "step": step,
                         "time": observation["time"],
+                        "image_source": args.image_description,
                         "uav_id": uav.uid,
                         "uav_energy": float(uav.energy),
                         "uav_energy_state": uav.energy_state,
@@ -268,12 +290,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--csv-prefix", type=str, default="env_integration_metrics", help="CSV filename prefix")
     parser.add_argument("--plot-prefix", type=str, default="env_integration_curves", help="Plot filename prefix")
     parser.add_argument("--seed", type=int, default=42, help="Seed for the reference image")
+    parser.add_argument(
+        "--image-source",
+        type=str,
+        default="cifar",
+        choices=["cifar", "random"],
+        help="Reference image source for DeepJSCC calls",
+    )
+    parser.add_argument("--sample-index", type=int, default=0, help="CIFAR-10 test sample index when image-source=cifar")
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
     csv_path, plot_path = run_integration_test(args)
+    print(f"reference_image={args.image_description}")
     print(f"saved_csv(env_integration_metrics)={csv_path}")
     print(f"saved_plot(env_integration_curves)={plot_path}")
 
