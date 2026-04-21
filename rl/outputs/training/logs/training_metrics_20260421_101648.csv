@@ -1,0 +1,2 @@
+episode,reward,reward_ma20,avg_aoi,avg_aoi_ma20,final_aoi,success_updates,service_attempts,success_rate,charge_steps,final_energy,min_energy,queue,epsilon
+1,-7.3495592963227665,-7.3495592963227665,2.5,2.5,3.0,0,2,0.0,1,4726.919191850185,4726.919191850185,273.08080814981514,0.97
