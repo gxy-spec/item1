@@ -72,6 +72,10 @@ def run_policy_episode(
             action = random_policy(env, obs)
         elif policy_name == "heuristic_discrete":
             action = heuristic_policy(env, obs)
+        elif policy_name == "continuous_rule":
+            from rl.baselines.continuous_rule import continuous_rule_policy
+
+            action = continuous_rule_policy(env, obs)
         else:
             raise ValueError(f"Unsupported policy: {policy_name}")
         obs, reward, done, info = env.step(action)

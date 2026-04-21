@@ -108,7 +108,11 @@ def plot_policy_comparison(all_rows: list[dict[str, float]], output_dir: Path) -
             values = [float(row[metric_key]) for row in all_rows if str(row["policy"]) == policy]
             metric_values.append(mean(values) if values else 0.0)
 
-        bars = ax.bar(policies, metric_values, color=["tab:blue", "tab:orange", "tab:green"][: len(policies)])
+        bars = ax.bar(
+            policies,
+            metric_values,
+            color=["tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple"][: len(policies)],
+        )
         ax.set_title(title)
         ax.grid(True, axis="y", linestyle="--", alpha=0.4)
         ylabel = "Lower is better" if lower_is_better else "Higher is better"
@@ -142,7 +146,7 @@ def main() -> None:
     args = parser.parse_args()
 
     config = AoIEnvConfig(max_steps=args.max_steps, num_ues=args.num_ues, seed=args.seed)
-    policies = ["random", "heuristic_discrete"]
+    policies = ["random", "heuristic_discrete", "continuous_rule"]
     if args.dqn_model:
         policies.append("dqn")
 
