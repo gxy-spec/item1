@@ -64,13 +64,20 @@ def load_cifar_test_image(sample_index: int) -> tuple[torch.Tensor, int]:
     return image, int(label)
 
 
-def load_reference_image(args: argparse.Namespace) -> tuple[torch.Tensor, str]:
+def load_reference_images(args: argparse.Namespace) -> tuple[list[torch.Tensor], str]:
     if args.image_source == "random":
-        image = build_random_reference_image(args.seed)
-        return image, f"random(seed={args.seed})"
+        images = [build_random_reference_image(args.seed + offset) for offset in range(args.num_samples)]
+        return images, f"random(seed={args.seed}, count={args.num_samples})"
 
-    image, label = load_cifar_test_image(args.sample_index)
-    return image, f"cifar10_test(index={args.sample_index}, label={label})"
+    transform = transforms.Compose([transforms.ToTensor()])
+    dataset = torchvision.datasets.CIFAR10(root="./data", train=False, download=True, transform=transform)
+    images = []
+    labels = []
+    for offset in range(args.num_samples):
+        image, label = dataset[(args.sample_index + offset) % len(dataset)]
+        images.append(image)
+        labels.append(int(label))
+    return images, f"cifar10_test(start={args.sample_index}, count={args.num_samples}, labels={labels})"
 
 
 def choose_target_link(simulator, uav_id: int) -> tuple[object, dict | None]:
@@ -153,7 +160,7 @@ def run_integration_test(args: argparse.Namespace) -> tuple[Path, Path]:
     simulator.reset()
 
     module = DeepJSCCScenarioModule(checkpoint_path=args.checkpoint)
-    reference_image, image_description = load_reference_image(args)
+    reference_images, image_description = load_reference_images(args)
     args.image_description = image_description
     ratios = parse_compression_schedule(args.compression_schedule)
     output_dir = Path(args.output_dir)
@@ -200,12 +207,15 @@ def run_integration_test(args: argparse.Namespace) -> tuple[Path, Path]:
                 rate_bps = float(best_link["rate"])
 
                 for compression_ratio in ratios:
-                    semantic_result = module.transmit(
-                        image=reference_image,
-                        sinr_db=sinr_db,
-                        compression_ratio=compression_ratio,
-                        task_weights={"quality": args.quality_weight, "cost": args.cost_weight},
-                    )
+                    sample_results = [
+                        module.transmit(
+                            image=image,
+                            sinr_db=sinr_db,
+                            compression_ratio=compression_ratio,
+                            task_weights={"quality": args.quality_weight, "cost": args.cost_weight},
+                        )
+                        for image in reference_images
+                    ]
                     row = {
                         "step": step,
                         "time": observation["time"],
@@ -218,18 +228,18 @@ def run_integration_test(args: argparse.Namespace) -> tuple[Path, Path]:
                         "sinr_db": sinr_db,
                         "rate_bps": rate_bps,
                         "compression_ratio": compression_ratio,
-                        "psnr": semantic_result.psnr,
-                        "semantic_quality": semantic_result.semantic_quality,
-                        "semantic_utility": semantic_result.semantic_utility,
-                        "transmission_cost": semantic_result.transmission_cost,
-                        "transmitted_symbols": semantic_result.transmitted_symbols,
-                        "total_symbols": semantic_result.total_symbols,
+                        "psnr": float(np.mean([result.psnr for result in sample_results])),
+                        "semantic_quality": float(np.mean([result.semantic_quality for result in sample_results])),
+                        "semantic_utility": float(np.mean([result.semantic_utility for result in sample_results])),
+                        "transmission_cost": float(np.mean([result.transmission_cost for result in sample_results])),
+                        "transmitted_symbols": int(round(np.mean([result.transmitted_symbols for result in sample_results]))),
+                        "total_symbols": int(round(np.mean([result.total_symbols for result in sample_results]))),
                         "coverage_available": 1,
                         "best_ratio_by_utility": "",
                     }
                     per_ratio_rows.append(row)
-                    if semantic_result.semantic_utility > best_utility:
-                        best_utility = semantic_result.semantic_utility
+                    if row["semantic_utility"] > best_utility:
+                        best_utility = row["semantic_utility"]
                         best_ratio_by_utility = f"{compression_ratio:.2f}"
 
                 for row in per_ratio_rows:
@@ -298,6 +308,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Reference image source for DeepJSCC calls",
     )
     parser.add_argument("--sample-index", type=int, default=0, help="CIFAR-10 test sample index when image-source=cifar")
+    parser.add_argument("--num-samples", type=int, default=1, help="Number of reference samples to average per step")
     return parser
 
 

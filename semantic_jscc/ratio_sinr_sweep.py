@@ -63,13 +63,20 @@ def load_cifar_test_image(sample_index: int) -> tuple[torch.Tensor, int]:
     return image, int(label)
 
 
-def load_reference_image(args: argparse.Namespace) -> tuple[torch.Tensor, str]:
+def load_reference_images(args: argparse.Namespace) -> tuple[list[torch.Tensor], str]:
     if args.image_source == "random":
-        image = build_random_reference_image(args.seed)
-        return image, f"random(seed={args.seed})"
+        images = [build_random_reference_image(args.seed + offset) for offset in range(args.num_samples)]
+        return images, f"random(seed={args.seed}, count={args.num_samples})"
 
-    image, label = load_cifar_test_image(args.sample_index)
-    return image, f"cifar10_test(index={args.sample_index}, label={label})"
+    transform = transforms.Compose([transforms.ToTensor()])
+    dataset = torchvision.datasets.CIFAR10(root="./data", train=False, download=True, transform=transform)
+    images = []
+    labels = []
+    for offset in range(args.num_samples):
+        image, label = dataset[(args.sample_index + offset) % len(dataset)]
+        images.append(image)
+        labels.append(int(label))
+    return images, f"cifar10_test(start={args.sample_index}, count={args.num_samples}, labels={labels})"
 
 
 def plot_sweep(rows: list[dict], ratios: list[float], output_dir: Path, prefix: str) -> Path:
@@ -125,7 +132,7 @@ def run_sweep(args: argparse.Namespace) -> tuple[Path, Path]:
     csv_path = ensure_unique_path(output_dir, args.csv_prefix, ".csv")
 
     module = DeepJSCCScenarioModule(checkpoint_path=args.checkpoint)
-    image, image_description = load_reference_image(args)
+    images, image_description = load_reference_images(args)
     args.image_description = image_description
 
     fieldnames = [
@@ -149,23 +156,26 @@ def run_sweep(args: argparse.Namespace) -> tuple[Path, Path]:
         for sinr_db in sinr_values:
             step_rows = []
             for ratio in ratios:
-                result = module.transmit(
-                    image=image,
-                    sinr_db=sinr_db,
-                    compression_ratio=ratio,
-                    task_weights={"quality": args.quality_weight, "cost": args.cost_weight},
-                )
+                sample_results = [
+                    module.transmit(
+                        image=image,
+                        sinr_db=sinr_db,
+                        compression_ratio=ratio,
+                        task_weights={"quality": args.quality_weight, "cost": args.cost_weight},
+                    )
+                    for image in images
+                ]
                 row = {
                     "sinr_db": sinr_db,
                     "image_source": args.image_description,
                     "compression_ratio": ratio,
-                    "psnr": result.psnr,
-                    "mse": result.mse,
-                    "semantic_quality": result.semantic_quality,
-                    "semantic_utility": result.semantic_utility,
-                    "transmission_cost": result.transmission_cost,
-                    "transmitted_symbols": result.transmitted_symbols,
-                    "total_symbols": result.total_symbols,
+                    "psnr": float(np.mean([result.psnr for result in sample_results])),
+                    "mse": float(np.mean([result.mse for result in sample_results])),
+                    "semantic_quality": float(np.mean([result.semantic_quality for result in sample_results])),
+                    "semantic_utility": float(np.mean([result.semantic_utility for result in sample_results])),
+                    "transmission_cost": float(np.mean([result.transmission_cost for result in sample_results])),
+                    "transmitted_symbols": int(round(np.mean([result.transmitted_symbols for result in sample_results]))),
+                    "total_symbols": int(round(np.mean([result.total_symbols for result in sample_results]))),
                 }
                 step_rows.append(row)
                 writer.writerow(row)
@@ -203,6 +213,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Reference image source for the sweep",
     )
     parser.add_argument("--sample-index", type=int, default=0, help="CIFAR-10 test sample index when image-source=cifar")
+    parser.add_argument("--num-samples", type=int, default=1, help="Number of reference samples to average")
     return parser
 
 
