@@ -1,3 +1,0 @@
-policy,episode,episode_reward,avg_mean_aoi,final_energy,final_state,charge_steps,success_updates,service_attempts,success_rate,max_queue
-random,1,-7.1981651070916275,2.5,4744.222526720135,return,1,0,1,0.0,255.77747327986447
-heuristic_discrete,1,-7.0295204550695916,2.5,4729.991529454318,normal,0,0,0,0.0,270.0084705456818
