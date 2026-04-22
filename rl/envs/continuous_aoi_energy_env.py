@@ -53,7 +53,7 @@ class ContinuousSingleUAVAoIEnv(SingleUAVAoIEnv):
     def _build_charge_direction(self) -> np.ndarray:
         return self._normalize(self._get_charging_waypoint() - self.uav.position)
 
-    def _apply_continuous_action(self, action: np.ndarray) -> tuple[int, int]:
+    def _apply_continuous_action(self, action: np.ndarray) -> int:
         action = np.asarray(action, dtype=float).reshape(-1)
         if action.size != self.action_dim:
             raise ValueError(f"continuous action must have shape ({self.action_dim},)")
@@ -84,17 +84,17 @@ class ContinuousSingleUAVAoIEnv(SingleUAVAoIEnv):
         elif self.uav.energy_state == "normal":
             self.uav.energy_state = "normal"
 
-        target_idx = self._select_service_target()
-        service_idx = target_idx + 1 if self._is_covered(self.ues[target_idx]) and charge_flag == 0 else 0
-        return charge_flag, service_idx
+        return charge_flag
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, Dict]:
         prev_queue = self.virtual_energy_queue
         prev_mean_aoi = float(np.mean(self.aoi))
 
-        charge_flag, service_idx = self._apply_continuous_action(action)
+        charge_flag = self._apply_continuous_action(action)
         self._advance_entities()
 
+        target_idx = self._select_service_target()
+        service_idx = target_idx + 1 if self._is_covered(self.ues[target_idx]) and charge_flag == 0 else 0
         selected_ue = None if service_idx == 0 else self.ues[service_idx - 1]
         rate = 0.0
         success = False

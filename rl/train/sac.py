@@ -12,6 +12,7 @@ import torch
 
 from rl.agents import SACAgent
 from rl.analysis import plot_training_curves
+from rl.baselines.continuous_env import continuous_rule_continuous_policy
 from rl.envs import ContinuousAoIEnvConfig, ContinuousSingleUAVAoIEnv
 
 
@@ -66,6 +67,28 @@ def ensure_unique_path(output_dir: str | Path, stem: str, suffix: str) -> Path:
         if not candidate.exists():
             return candidate
         index += 1
+
+
+def heuristic_warmup_action(
+    env: ContinuousSingleUAVAoIEnv,
+    obs: np.ndarray,
+    noise_std_xy: float,
+    noise_std_charge: float,
+) -> np.ndarray:
+    base_action = continuous_rule_continuous_policy(env, obs).astype(np.float32)
+    noise = np.array(
+        [
+            env.rng.normal(0.0, noise_std_xy),
+            env.rng.normal(0.0, noise_std_xy),
+            env.rng.normal(0.0, noise_std_charge),
+        ],
+        dtype=np.float32,
+    )
+    action = base_action + noise
+    action[0] = float(np.clip(action[0], -1.0, 1.0))
+    action[1] = float(np.clip(action[1], -1.0, 1.0))
+    action[2] = float(np.clip(action[2], 0.0, 1.0))
+    return action
 
 
 def train(args: argparse.Namespace) -> None:
@@ -140,13 +163,18 @@ def train(args: argparse.Namespace) -> None:
             while not done:
                 global_step += 1
                 if global_step <= args.start_steps:
-                    action = np.array(
-                        [
-                            env.rng.uniform(-1.0, 1.0),
-                            env.rng.uniform(-1.0, 1.0),
-                            env.rng.uniform(0.0, 1.0),
-                        ],
-                        dtype=np.float32,
+                    action = heuristic_warmup_action(
+                        env=env,
+                        obs=obs,
+                        noise_std_xy=args.warmup_noise_xy,
+                        noise_std_charge=args.warmup_noise_charge,
+                    )
+                elif episode <= args.guided_episodes and env.rng.random() < args.guided_exploration_prob:
+                    action = heuristic_warmup_action(
+                        env=env,
+                        obs=obs,
+                        noise_std_xy=args.guided_noise_xy,
+                        noise_std_charge=args.guided_noise_charge,
                     )
                 else:
                     action = agent.select_action(obs, evaluate=False).astype(np.float32)
@@ -252,9 +280,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--buffer-size", type=int, default=100000)
-    parser.add_argument("--start-steps", type=int, default=1000)
-    parser.add_argument("--update-after", type=int, default=500)
+    parser.add_argument("--start-steps", type=int, default=200)
+    parser.add_argument("--update-after", type=int, default=100)
     parser.add_argument("--updates-per-step", type=int, default=1)
+    parser.add_argument("--guided-episodes", type=int, default=200)
+    parser.add_argument("--guided-exploration-prob", type=float, default=0.40)
+    parser.add_argument("--warmup-noise-xy", type=float, default=0.18)
+    parser.add_argument("--warmup-noise-charge", type=float, default=0.08)
+    parser.add_argument("--guided-noise-xy", type=float, default=0.10)
+    parser.add_argument("--guided-noise-charge", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output-dir", type=str, default="rl/outputs/training/logs")
     parser.add_argument("--plot-output-dir", type=str, default="rl/outputs/training/plots")
