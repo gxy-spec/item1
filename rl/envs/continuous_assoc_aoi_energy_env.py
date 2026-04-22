@@ -5,65 +5,47 @@ from typing import Dict
 
 import numpy as np
 
-from rl.envs.aoi_energy_env import AoIEnvConfig, SingleUAVAoIEnv
+from rl.envs.continuous_aoi_energy_env import ContinuousAoIEnvConfig, ContinuousSingleUAVAoIEnv
 
 
 @dataclass
-class ContinuousAoIEnvConfig(AoIEnvConfig):
-    action_dim: int = 3
-    charge_bias_threshold: float = 0.55
-    service_distance_epsilon: float = 25.0
+class ContinuousAssocAoIEnvConfig(ContinuousAoIEnvConfig):
+    action_dim: int = 4
 
 
-class ContinuousSingleUAVAoIEnv(SingleUAVAoIEnv):
-    """连续动作版单 UAV AoI-能量环境。
+class ContinuousAssocSingleUAVAoIEnv(ContinuousSingleUAVAoIEnv):
+    """连续动作 + 用户关联版环境。
 
     动作定义:
     - a_x in [-1, 1]
     - a_y in [-1, 1]
     - a_c in [0, 1]
-
-    其中 a_x/a_y 决定任务方向，a_c 决定向充电方向的偏置程度。
+    - a_u in [0, 1]
     """
 
-    def __init__(self, config: ContinuousAoIEnvConfig | None = None):
-        super().__init__(config or ContinuousAoIEnvConfig())
-        self.config: ContinuousAoIEnvConfig
+    def __init__(self, config: ContinuousAssocAoIEnvConfig | None = None):
+        super().__init__(config or ContinuousAssocAoIEnvConfig())
+        self.config: ContinuousAssocAoIEnvConfig
         self.action_dim = self.config.action_dim
+        self.action_low = np.array([-1.0, -1.0, 0.0, 0.0], dtype=np.float32)
+        self.action_high = np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32)
 
-    @staticmethod
-    def _normalize(vec: np.ndarray) -> np.ndarray:
-        norm = float(np.linalg.norm(vec))
-        if norm < 1e-8:
-            return np.zeros_like(vec)
-        return vec / norm
+    def _decode_service_target(self, action_service: float) -> int:
+        clipped = float(np.clip(action_service, 0.0, 1.0 - 1e-8))
+        return min(int(clipped * self.config.num_ues), self.config.num_ues - 1)
 
-    def _select_service_target(self) -> int:
-        scores = []
-        for idx, ue in enumerate(self.ues):
-            horizontal_distance = float(np.linalg.norm(ue.position - self.uav.position[:2]))
-            score = float(self.aoi[idx] / (horizontal_distance + self.config.service_distance_epsilon))
-            scores.append(score)
-        return int(np.argmax(scores))
-
-    def _build_task_direction(self, action_xy: np.ndarray) -> np.ndarray:
-        direction = np.array([float(action_xy[0]), float(action_xy[1]), 0.0], dtype=float)
-        return self._normalize(direction)
-
-    def _build_charge_direction(self) -> np.ndarray:
-        return self._normalize(self._get_charging_waypoint() - self.uav.position)
-
-    def _apply_continuous_action(self, action: np.ndarray) -> int:
+    def _apply_continuous_action(self, action: np.ndarray) -> tuple[int, int]:
         action = np.asarray(action, dtype=float).reshape(-1)
         if action.size != self.action_dim:
             raise ValueError(f"continuous action must have shape ({self.action_dim},)")
 
         if self.uav.energy_state in {"charging", "resume", "depleted", "return"}:
-            return 1 if self.uav.energy_state in {"charging", "resume", "depleted", "return"} else 0
+            return 1, 0
 
         a_x = float(np.clip(action[0], -1.0, 1.0))
         a_y = float(np.clip(action[1], -1.0, 1.0))
         a_c = float(np.clip(action[2], 0.0, 1.0))
+        a_u = float(np.clip(action[3], 0.0, 1.0))
 
         dynamic_return_threshold = max(
             self.energy_model.return_threshold * self.energy_model.E_max,
@@ -87,16 +69,16 @@ class ContinuousSingleUAVAoIEnv(SingleUAVAoIEnv):
         elif self.uav.energy_state == "normal":
             self.uav.energy_state = "normal"
 
-        return charge_flag
+        target_idx = self._decode_service_target(a_u)
+        return charge_flag, target_idx
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, Dict]:
         prev_queue = self.virtual_energy_queue
         prev_mean_aoi = float(np.mean(self.aoi))
 
-        charge_flag = self._apply_continuous_action(action)
+        charge_flag, target_idx = self._apply_continuous_action(action)
         self._advance_entities()
 
-        target_idx = self._select_service_target()
         service_idx = target_idx + 1 if self._is_covered(self.ues[target_idx]) and charge_flag == 0 else 0
         selected_ue = None if service_idx == 0 else self.ues[service_idx - 1]
         rate = 0.0
@@ -143,6 +125,7 @@ class ContinuousSingleUAVAoIEnv(SingleUAVAoIEnv):
             "mean_aoi": mean_aoi,
             "aoi": self.aoi.copy(),
             "selected_ue": None if selected_ue is None else selected_ue.uid,
+            "selected_target_idx": int(target_idx),
             "success": success,
             "rate": rate,
             "energy": float(self.uav.energy),
@@ -154,6 +137,7 @@ class ContinuousSingleUAVAoIEnv(SingleUAVAoIEnv):
             "action_ax": float(np.clip(action[0], -1.0, 1.0)),
             "action_ay": float(np.clip(action[1], -1.0, 1.0)),
             "action_charge_bias": float(np.clip(action[2], 0.0, 1.0)),
+            "action_service_target": float(np.clip(action[3], 0.0, 1.0)),
             **energy_info,
         }
         return self._get_observation(), float(reward), done, info

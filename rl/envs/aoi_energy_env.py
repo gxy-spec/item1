@@ -37,6 +37,8 @@ class AoIEnvConfig:
     success_reward: float = 1.5
     invalid_service_penalty: float = 0.15
     charge_step_penalty: float = 0.02
+    energy_hard_constraint: bool = True
+    terminate_on_depleted: bool = False
     seed: int = 42
 
 
@@ -139,6 +141,13 @@ class SingleUAVAoIEnv:
 
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, Dict]:
         charge_flag, movement_idx, service_idx = self.decode_action(int(action))
+        forced_return = False
+        if self.config.energy_hard_constraint:
+            charge_flag, movement_idx, service_idx, forced_return = self._enforce_energy_hard_constraint(
+                charge_flag,
+                movement_idx,
+                service_idx,
+            )
         prev_queue = self.virtual_energy_queue
         prev_mean_aoi = float(np.mean(self.aoi))
 
@@ -182,7 +191,9 @@ class SingleUAVAoIEnv:
             reward -= self.config.depleted_penalty
 
         self.current_step += 1
-        done = self.current_step >= self.config.max_steps or self.uav.energy_state == "depleted"
+        done = self.current_step >= self.config.max_steps or (
+            self.config.terminate_on_depleted and self.uav.energy_state == "depleted"
+        )
 
         info = {
             "mean_aoi": mean_aoi,
@@ -196,6 +207,7 @@ class SingleUAVAoIEnv:
             "queue_norm": float(queue_norm),
             "drift": float(drift),
             "aoi_improvement": float(aoi_improvement),
+            "forced_return": forced_return,
             **energy_info,
         }
         return self._get_observation(), float(reward), done, info
@@ -304,6 +316,27 @@ class SingleUAVAoIEnv:
         reserve_energy = 0.05 * self.energy_model.E_max
         return min(self.energy_model.E_max, travel_energy + reserve_energy)
 
+    def _dynamic_return_threshold(self) -> float:
+        return max(
+            self.energy_model.return_threshold * self.energy_model.E_max,
+            self._estimate_return_energy_budget(),
+        )
+
+    def _enforce_energy_hard_constraint(
+        self,
+        charge_flag: int,
+        movement_idx: int,
+        service_idx: int,
+    ) -> Tuple[int, int, int, bool]:
+        if self.uav.energy_state in {"charging", "resume", "depleted", "return"}:
+            return charge_flag, movement_idx, service_idx, False
+
+        if self.uav.energy > self._dynamic_return_threshold():
+            return charge_flag, movement_idx, service_idx, False
+
+        forced_movement = self.MOVEMENTS.index("hover")
+        return 1, forced_movement, 0, True
+
     def _update_energy(self, selected_ue: UE | None, charge_flag: int) -> Dict[str, float]:
         a2a_metrics = self.a2a_channel.compute_link_metrics(self.uav, self.hap)
         channel_gain = a2a_metrics["gain"]
@@ -334,10 +367,7 @@ class SingleUAVAoIEnv:
                 self.uav.velocity[:] = 0.0
                 return {"e_fly": e_fly, "e_tx": e_tx, "e_charge": e_charge}
 
-        dynamic_return_threshold = max(
-            self.energy_model.return_threshold * self.energy_model.E_max,
-            self._estimate_return_energy_budget(),
-        )
+        dynamic_return_threshold = self._dynamic_return_threshold()
         if self.uav.energy <= dynamic_return_threshold and self.uav.energy_state not in {"charging", "depleted", "return"}:
             self.uav.energy_state = "return"
 

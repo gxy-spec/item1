@@ -46,10 +46,26 @@ def build_unique_csv_path(output_dir: str | Path, csv_name: str) -> Path:
         index += 1
 
 
+def ensure_unique_path(output_dir: str | Path, stem: str, suffix: str) -> Path:
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    candidate = output_dir / f"{stem}_{timestamp}{suffix}"
+    if not candidate.exists():
+        return candidate
+    index = 1
+    while True:
+        candidate = output_dir / f"{stem}_{timestamp}_{index}{suffix}"
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
 def train(args: argparse.Namespace) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     env = SingleUAVAoIEnv(AoIEnvConfig(max_steps=args.max_steps, num_ues=args.num_ues, seed=args.seed))
     csv_path = build_unique_csv_path(args.output_dir, args.csv_name)
+    best_model_path = ensure_unique_path(args.model_output_dir, "dqn_best", ".pth")
 
     q_net = QNetwork(env.observation_dim, env.num_actions).to(device)
     target_net = QNetwork(env.observation_dim, env.num_actions).to(device)
@@ -61,6 +77,7 @@ def train(args: argparse.Namespace) -> None:
     global_step = 0
     reward_window = deque(maxlen=20)
     aoi_window = deque(maxlen=20)
+    best_reward_ma20 = -float("inf")
 
     with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
         writer = csv.DictWriter(
@@ -80,6 +97,7 @@ def train(args: argparse.Namespace) -> None:
                 "min_energy",
                 "queue",
                 "epsilon",
+                "best_model_path",
             ],
         )
         writer.writeheader()
@@ -157,7 +175,14 @@ def train(args: argparse.Namespace) -> None:
                 "min_energy": float(min_energy),
                 "queue": float(info["virtual_energy_queue"]),
                 "epsilon": float(epsilon),
+                "best_model_path": "",
             }
+
+            save_score = row["reward_ma20"] - 0.25 * row["avg_aoi_ma20"]
+            if save_score >= best_reward_ma20:
+                best_reward_ma20 = save_score
+                torch.save({"model_state": q_net.state_dict()}, best_model_path)
+                row["best_model_path"] = str(best_model_path)
             writer.writerow(row)
             csv_file.flush()
 
@@ -174,8 +199,11 @@ def train(args: argparse.Namespace) -> None:
                 f"queue(虚拟能量队列)={info['virtual_energy_queue']:.1f} "
                 f"epsilon(探索率)={epsilon:.3f}"
             )
+            if row["best_model_path"]:
+                print(f"saved_model(best_dqn_checkpoint)={best_model_path}")
 
     print(f"saved_csv(training_metrics)={csv_path}")
+    print(f"saved_model(dqn_checkpoint)={best_model_path}")
 
     if args.auto_plot:
         plot_path = plot_training_curves(csv_path=csv_path, output_dir=args.plot_output_dir)
@@ -184,21 +212,22 @@ def train(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train a simple DQN on the AoI-energy environment")
-    parser.add_argument("--episodes", type=int, default=20)
+    parser.add_argument("--episodes", type=int, default=300)
     parser.add_argument("--max-steps", type=int, default=150)
     parser.add_argument("--num-ues", type=int, default=5)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--buffer-size", type=int, default=5000)
-    parser.add_argument("--target-update", type=int, default=100)
+    parser.add_argument("--buffer-size", type=int, default=20000)
+    parser.add_argument("--target-update", type=int, default=200)
     parser.add_argument("--epsilon-start", type=float, default=1.0)
     parser.add_argument("--epsilon-end", type=float, default=0.05)
-    parser.add_argument("--epsilon-decay", type=float, default=0.97)
+    parser.add_argument("--epsilon-decay", type=float, default=0.985)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output-dir", type=str, default="rl/outputs/training/logs")
     parser.add_argument("--csv-name", type=str, default="training_metrics.csv")
     parser.add_argument("--plot-output-dir", type=str, default="rl/outputs/training/plots")
+    parser.add_argument("--model-output-dir", type=str, default="rl/outputs/training/models")
     parser.add_argument("--auto-plot", dest="auto_plot", action="store_true")
     parser.add_argument("--no-auto-plot", dest="auto_plot", action="store_false")
     parser.set_defaults(auto_plot=True)
