@@ -97,6 +97,7 @@ def run_continuous_policy_episode(
     charge_steps = 0
     success_updates = 0
     service_attempts = 0
+    queue_values = []
     max_queue = 0.0
 
     done = False
@@ -117,6 +118,7 @@ def run_continuous_policy_episode(
             success_updates += 1
         if info["selected_ue"] is not None:
             service_attempts += 1
+        queue_values.append(float(info["virtual_energy_queue"]))
         max_queue = max(max_queue, float(info["virtual_energy_queue"]))
 
     return {
@@ -129,5 +131,7 @@ def run_continuous_policy_episode(
         "success_updates": success_updates,
         "service_attempts": service_attempts,
         "success_rate": success_updates / max(service_attempts, 1),
+        "avg_queue": float(np.mean(queue_values)) if queue_values else 0.0,
+        "final_queue": float(queue_values[-1]) if queue_values else 0.0,
         "max_queue": max_queue,
     }

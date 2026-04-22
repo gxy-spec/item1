@@ -1,3 +1,3 @@
-from .aoi_energy_env import SingleUAVAoIEnv, AoIEnvConfig
+from .envs import AoIEnvConfig, ContinuousAoIEnvConfig, ContinuousSingleUAVAoIEnv, SingleUAVAoIEnv
 
-__all__ = ["SingleUAVAoIEnv", "AoIEnvConfig"]
+__all__ = ["SingleUAVAoIEnv", "AoIEnvConfig", "ContinuousSingleUAVAoIEnv", "ContinuousAoIEnvConfig"]

@@ -38,7 +38,12 @@ def load_csv(csv_path: Path) -> Dict[str, List[float]]:
         data: Dict[str, List[float]] = {name: [] for name in columns}
         for row in reader:
             for name in columns:
-                data[name].append(float(row[name]))
+                value = row[name]
+                try:
+                    data[name].append(float(value))
+                except (TypeError, ValueError):
+                    # Skip non-numeric metadata columns such as saved model paths.
+                    continue
     return data
 
 

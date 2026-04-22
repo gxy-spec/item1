@@ -7,9 +7,12 @@ from pathlib import Path
 from statistics import mean
 
 import matplotlib.pyplot as plt
+import numpy as np
+import torch
 
+from rl.agents import SACAgent
 from rl.baselines.continuous_env import run_continuous_policy_episode
-from rl.envs import ContinuousAoIEnvConfig
+from rl.envs import ContinuousAoIEnvConfig, ContinuousSingleUAVAoIEnv
 
 
 def ensure_unique_path(output_dir: Path, prefix: str, suffix: str) -> Path:
@@ -36,12 +39,68 @@ def summarise(results: list[dict[str, float]]) -> dict[str, float]:
         "success_updates",
         "service_attempts",
         "success_rate",
+        "avg_queue",
+        "final_queue",
         "max_queue",
     ]
     summary = {}
     for key in keys:
         summary[key] = mean(float(item[key]) for item in results)
     return summary
+
+
+def run_sac_episode(model_path: str, config: ContinuousAoIEnvConfig, seed: int) -> dict[str, float]:
+    env = ContinuousSingleUAVAoIEnv(config)
+    obs = env.reset(seed=seed)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    action_low = np.array([-1.0, -1.0, 0.0], dtype=np.float32)
+    action_high = np.array([1.0, 1.0, 1.0], dtype=np.float32)
+    agent = SACAgent(
+        obs_dim=env.observation_dim,
+        action_dim=env.action_dim,
+        action_low=action_low,
+        action_high=action_high,
+        device=device,
+    )
+    agent.load(model_path)
+
+    total_reward = 0.0
+    mean_aois = []
+    charge_steps = 0
+    success_updates = 0
+    service_attempts = 0
+    queue_values = []
+    max_queue = 0.0
+    done = False
+
+    while not done:
+        action = agent.select_action(obs, evaluate=True).astype(np.float32)
+        obs, reward, done, info = env.step(action)
+        total_reward += reward
+        mean_aois.append(info["mean_aoi"])
+        if info["energy_state"] in {"return", "charging", "resume"}:
+            charge_steps += 1
+        if info["success"]:
+            success_updates += 1
+        if info["selected_ue"] is not None:
+            service_attempts += 1
+        queue_values.append(float(info["virtual_energy_queue"]))
+        max_queue = max(max_queue, float(info["virtual_energy_queue"]))
+
+    return {
+        "policy": "sac",
+        "episode_reward": total_reward,
+        "avg_mean_aoi": float(np.mean(mean_aois)) if mean_aois else 0.0,
+        "final_energy": float(env.uav.energy),
+        "final_state": env.uav.energy_state,
+        "charge_steps": charge_steps,
+        "success_updates": success_updates,
+        "service_attempts": service_attempts,
+        "success_rate": success_updates / max(service_attempts, 1),
+        "avg_queue": float(np.mean(queue_values)) if queue_values else 0.0,
+        "final_queue": float(queue_values[-1]) if queue_values else 0.0,
+        "max_queue": max_queue,
+    }
 
 
 def plot_policy_comparison(all_rows: list[dict[str, float]], output_dir: Path) -> Path:
@@ -52,7 +111,7 @@ def plot_policy_comparison(all_rows: list[dict[str, float]], output_dir: Path) -
         ("success_rate", "Success Rate", False),
         ("charge_steps", "Charging-related Steps", True),
         ("final_energy", "Final Energy", False),
-        ("max_queue", "Max Queue", True),
+        ("avg_queue", "Average Queue", True),
     ]
 
     fig, axes = plt.subplots(3, 2, figsize=(14, 10))
@@ -98,17 +157,23 @@ def main() -> None:
     parser.add_argument("--num-ues", type=int, default=5)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output-dir", type=str, default="rl/outputs/evaluation/continuous")
+    parser.add_argument("--sac-model", type=str, default=None, help="Optional path to a trained SAC checkpoint")
     args = parser.parse_args()
 
     config = ContinuousAoIEnvConfig(max_steps=args.max_steps, num_ues=args.num_ues, seed=args.seed)
     policies = ["random_continuous", "continuous_rule_continuous"]
+    if args.sac_model:
+        policies.append("sac")
     all_rows = []
 
     for policy in policies:
         episode_results = []
         for episode in range(args.episodes):
             seed = args.seed + episode
-            result = run_continuous_policy_episode(policy_name=policy, config=config, seed=seed)
+            if policy == "sac":
+                result = run_sac_episode(model_path=args.sac_model, config=config, seed=seed)
+            else:
+                result = run_continuous_policy_episode(policy_name=policy, config=config, seed=seed)
             result["episode"] = episode + 1
             episode_results.append(result)
             all_rows.append(result)
@@ -121,6 +186,8 @@ def main() -> None:
             f"success_rate={summary['success_rate']:.3f} "
             f"charge_steps={summary['charge_steps']:.1f} "
             f"final_energy={summary['final_energy']:.1f} "
+            f"avg_queue={summary['avg_queue']:.1f} "
+            f"final_queue={summary['final_queue']:.1f} "
             f"max_queue={summary['max_queue']:.1f}"
         )
 
@@ -140,6 +207,8 @@ def main() -> None:
                 "success_updates",
                 "service_attempts",
                 "success_rate",
+                "avg_queue",
+                "final_queue",
                 "max_queue",
             ],
         )
