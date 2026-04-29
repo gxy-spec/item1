@@ -21,6 +21,7 @@ matplotlib.use("Agg")
 if __package__ is None and __name__ == "__main__":
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from env.ofdma_simulator import build_default_ofdma_simulation
 from env.simulator import build_default_simulation
 from semantic_jscc import DeepJSCCScenarioModule
 
@@ -80,16 +81,62 @@ def load_reference_images(args: argparse.Namespace) -> tuple[list[torch.Tensor],
     return images, f"cifar10_test(start={args.sample_index}, count={args.num_samples}, labels={labels})"
 
 
-def choose_target_link(simulator, uav_id: int) -> tuple[object, dict | None]:
+def choose_target_link(simulator, uav_id: int, selection_mode: str, with_interference: bool) -> tuple[object, dict | None]:
     uav = next((item for item in simulator.uav_list if item.uid == uav_id), None)
     if uav is None:
         raise ValueError(f"UAV {uav_id} not found")
 
-    results = simulator.a2g_channel.compute_sinr_and_rate(uav, simulator.ue_list, simulator.uav_list)
+    interfering_uavs = simulator.uav_list if with_interference else [uav]
+    results = simulator.a2g_channel.compute_sinr_and_rate(uav, simulator.ue_list, interfering_uavs)
     if not results:
         return uav, None
-    best_link = max(results, key=lambda item: item["sinr"])
-    return uav, best_link
+    if selection_mode == "best":
+        selected = max(results, key=lambda item: item["sinr"])
+    elif selection_mode == "worst":
+        selected = min(results, key=lambda item: item["sinr"])
+    elif selection_mode == "nearest":
+        selected = min(results, key=lambda item: item["distance"])
+    elif selection_mode == "first":
+        selected = min(results, key=lambda item: item["ue"].uid)
+    else:
+        raise ValueError(f"Unsupported selection mode: {selection_mode}")
+    return uav, selected
+
+
+def choose_target_link_ofdma(simulator, uav_id: int, selection_mode: str, with_interference: bool) -> tuple[object, dict | None]:
+    uav = next((item for item in simulator.uav_list if item.uid == uav_id), None)
+    if uav is None:
+        raise ValueError(f"UAV {uav_id} not found")
+
+    assignment = simulator._build_assignment(uav)
+    interfering_allocations = []
+    if with_interference:
+        interfering_allocations = [
+            (other_uav, simulator._build_assignment(other_uav))
+            for other_uav in simulator.uav_list
+            if other_uav.uid != uav.uid
+        ]
+
+    metrics = simulator.ofdma_channel.compute_assignment_metrics(
+        serving_uav=uav,
+        ue_list=simulator.ue_list,
+        serving_assignment=assignment,
+        interfering_allocations=interfering_allocations,
+    )
+    if not metrics:
+        return uav, None
+
+    if selection_mode == "best":
+        selected = max(metrics, key=lambda item: item["mean_sinr"])
+    elif selection_mode == "worst":
+        selected = min(metrics, key=lambda item: item["mean_sinr"])
+    elif selection_mode == "nearest":
+        selected = min(metrics, key=lambda item: item["distance"])
+    elif selection_mode == "first":
+        selected = min(metrics, key=lambda item: item["ue"].uid)
+    else:
+        raise ValueError(f"Unsupported selection mode: {selection_mode}")
+    return uav, selected
 
 
 def plot_integration_metrics(rows: list[dict], ratios: list[float], output_dir: Path, prefix: str) -> Path:
@@ -156,7 +203,10 @@ def plot_integration_metrics(rows: list[dict], ratios: list[float], output_dir: 
 
 
 def run_integration_test(args: argparse.Namespace) -> tuple[Path, Path]:
-    simulator = build_default_simulation()
+    if args.channel_mode == "ofdma":
+        simulator = build_default_ofdma_simulation(scheduler_mode=args.scheduler_mode)
+    else:
+        simulator = build_default_simulation()
     simulator.reset()
 
     module = DeepJSCCScenarioModule(checkpoint_path=args.checkpoint)
@@ -170,6 +220,7 @@ def run_integration_test(args: argparse.Namespace) -> tuple[Path, Path]:
         "step",
         "time",
         "image_source",
+        "channel_mode",
         "uav_id",
         "uav_energy",
         "uav_energy_state",
@@ -177,6 +228,7 @@ def run_integration_test(args: argparse.Namespace) -> tuple[Path, Path]:
         "sinr_linear",
         "sinr_db",
         "rate_bps",
+        "assigned_rbs",
         "compression_ratio",
         "psnr",
         "semantic_quality",
@@ -195,14 +247,28 @@ def run_integration_test(args: argparse.Namespace) -> tuple[Path, Path]:
 
         for step in range(args.steps):
             observation, _ = simulator.step()
-            uav, best_link = choose_target_link(simulator, args.uav_id)
+            if args.channel_mode == "ofdma":
+                uav, best_link = choose_target_link_ofdma(
+                    simulator,
+                    args.uav_id,
+                    selection_mode=args.link_selection_mode,
+                    with_interference=args.with_interference,
+                )
+            else:
+                uav, best_link = choose_target_link(
+                    simulator,
+                    args.uav_id,
+                    selection_mode=args.link_selection_mode,
+                    with_interference=args.with_interference,
+                )
 
             per_ratio_rows = []
             best_ratio_by_utility = ""
             best_utility = -float("inf")
 
             if best_link is not None:
-                sinr_linear = float(best_link["sinr"])
+                sinr_key = "mean_sinr" if args.channel_mode == "ofdma" else "sinr"
+                sinr_linear = float(best_link[sinr_key])
                 sinr_db = 10.0 * np.log10(max(sinr_linear, 1e-10))
                 rate_bps = float(best_link["rate"])
 
@@ -220,6 +286,7 @@ def run_integration_test(args: argparse.Namespace) -> tuple[Path, Path]:
                         "step": step,
                         "time": observation["time"],
                         "image_source": args.image_description,
+                        "channel_mode": args.channel_mode,
                         "uav_id": uav.uid,
                         "uav_energy": float(uav.energy),
                         "uav_energy_state": uav.energy_state,
@@ -227,6 +294,7 @@ def run_integration_test(args: argparse.Namespace) -> tuple[Path, Path]:
                         "sinr_linear": sinr_linear,
                         "sinr_db": sinr_db,
                         "rate_bps": rate_bps,
+                        "assigned_rbs": "",
                         "compression_ratio": compression_ratio,
                         "psnr": float(np.mean([result.psnr for result in sample_results])),
                         "semantic_quality": float(np.mean([result.semantic_quality for result in sample_results])),
@@ -237,6 +305,8 @@ def run_integration_test(args: argparse.Namespace) -> tuple[Path, Path]:
                         "coverage_available": 1,
                         "best_ratio_by_utility": "",
                     }
+                    if args.channel_mode == "ofdma":
+                        row["assigned_rbs"] = ",".join(str(v) for v in best_link["assigned_rbs"])
                     per_ratio_rows.append(row)
                     if row["semantic_utility"] > best_utility:
                         best_utility = row["semantic_utility"]
@@ -262,6 +332,7 @@ def run_integration_test(args: argparse.Namespace) -> tuple[Path, Path]:
                         "step": step,
                         "time": observation["time"],
                         "image_source": args.image_description,
+                        "channel_mode": args.channel_mode,
                         "uav_id": uav.uid,
                         "uav_energy": float(uav.energy),
                         "uav_energy_state": uav.energy_state,
@@ -269,6 +340,7 @@ def run_integration_test(args: argparse.Namespace) -> tuple[Path, Path]:
                         "sinr_linear": "",
                         "sinr_db": "",
                         "rate_bps": "",
+                        "assigned_rbs": "",
                         "compression_ratio": compression_ratio,
                         "psnr": "",
                         "semantic_quality": "",
@@ -292,7 +364,33 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Minimal in-environment DeepJSCC integration test")
     parser.add_argument("--steps", type=int, default=20, help="Number of simulator steps to run")
     parser.add_argument("--uav-id", type=int, default=1, help="UAV id to inspect")
+    parser.add_argument(
+        "--channel-mode",
+        type=str,
+        default="legacy",
+        choices=["legacy", "ofdma"],
+        help="Use the legacy single-bandwidth channel or the new OFDMA simulator",
+    )
+    parser.add_argument(
+        "--scheduler-mode",
+        type=str,
+        default="aoi_weighted",
+        choices=["round_robin", "equal_share", "aoi_weighted"],
+        help="OFDMA RB scheduler mode when channel-mode=ofdma",
+    )
     parser.add_argument("--compression-schedule", type=str, default="1.0,0.75,0.5,0.25", help="Comma-separated compression ratios to compare at every step")
+    parser.add_argument(
+        "--link-selection-mode",
+        type=str,
+        default="first",
+        choices=["first", "nearest", "best", "worst"],
+        help="How to choose the target covered UE for DeepJSCC evaluation",
+    )
+    parser.add_argument(
+        "--with-interference",
+        action="store_true",
+        help="Include other UAVs as co-channel interferers when computing A2G SINR",
+    )
     parser.add_argument("--quality-weight", type=float, default=1.0, help="Semantic quality weight")
     parser.add_argument("--cost-weight", type=float, default=0.05, help="Transmission cost weight")
     parser.add_argument("--checkpoint", type=str, default="semantic_jscc/checkpoints/deepjscc_best.pth", help="DeepJSCC checkpoint path")

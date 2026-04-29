@@ -865,11 +865,19 @@ class Simulator:
                 self.energy_state_history.append(energy_states)
                 self.metrics_history.append(metrics)
 
-            print(f"✓ 仿真完成 ({len(self.uav_position_history)}帧)")
+            actual_frames = min(
+                frames,
+                len(self.uav_position_history),
+                len(self.ue_position_history),
+                len(self.energy_state_history),
+                len(self.metrics_history),
+            )
+            print(f"仿真完成 ({actual_frames}帧)")
 
             # 初始化窗口
             self._init_artists()
             self._init_energy_figure()
+            self._init_performance_figure()
 
             # 创建动画，使用保存的历史数据
             def update_for_save(frame):
@@ -920,7 +928,7 @@ class Simulator:
             anim = animation.FuncAnimation(
                 self.fig,
                 update_for_save,
-                frames=frames,
+                frames=actual_frames,
                 interval=interval,
                 blit=False,
                 repeat=False,
@@ -930,24 +938,23 @@ class Simulator:
             try:
                 writer = animation.PillowWriter(fps=1000/interval)
                 anim.save(save_path, writer=writer)
-                print(f"✓ 运动仿真动画已保存到: {save_path}")
+                print(f"运动仿真动画已保存到: {save_path}")
                 
                 # 保存能量管理图
                 energy_path = save_path.replace('.gif', '_energy.png')
                 self.fig4.savefig(energy_path, dpi=150, bbox_inches='tight')
-                print(f"✓ 能量管理图已保存到: {energy_path}")
+                print(f"能量管理图已保存到: {energy_path}")
 
                 # 保存信道性能图和SINR热力图
-                self._init_performance_figure()
                 self._update_performance_plot()
                 perf_path = save_path.replace('.gif', '_performance.png')
                 self.fig2.savefig(perf_path, dpi=150, bbox_inches='tight')
-                print(f"✓ 信道性能图已保存到: {perf_path}")
+                print(f"信道性能图已保存到: {perf_path}")
 
                 self._init_heatmap_figure()
                 heatmap_path = save_path.replace('.gif', '_heatmap.png')
                 self.fig3.savefig(heatmap_path, dpi=150, bbox_inches='tight')
-                print(f"✓ SINR热力图已保存到: {heatmap_path}")
+                print(f"SINR热力图已保存到: {heatmap_path}")
 
             except Exception as e:
                 print(f"保存动画失败: {e}")
@@ -1031,7 +1038,7 @@ def build_default_simulation() -> Simulator:
         c=3e8,
         bandwidth=10e6,
         transmit_power=0.1,
-        noise_power=1e-9,
+        noise_power=1e-13,
     )
 
     a2a_channel = A2AChannel(
@@ -1039,7 +1046,7 @@ def build_default_simulation() -> Simulator:
         kappa=1e-3,      # 衰减因子
         bandwidth=10e6,
         transmit_power=0.5,
-        noise_power=1e-9,
+        noise_power=1e-13,
     )
 
     # 返回Simulator实例

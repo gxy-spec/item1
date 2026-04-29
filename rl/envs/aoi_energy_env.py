@@ -37,6 +37,8 @@ class AoIEnvConfig:
     success_reward: float = 1.5
     invalid_service_penalty: float = 0.15
     charge_step_penalty: float = 0.02
+    a2g_noise_power: float = 1e-13
+    a2a_noise_power: float = 1e-13
     energy_hard_constraint: bool = True
     terminate_on_depleted: bool = False
     seed: int = 42
@@ -64,14 +66,14 @@ class SingleUAVAoIEnv:
             c=3e8,
             bandwidth=10e6,
             transmit_power=0.1,
-            noise_power=1e-9,
+            noise_power=self.config.a2g_noise_power,
         )
         self.a2a_channel = A2AChannel(
             beta0=10.0,
             kappa=1e-3,
             bandwidth=10e6,
             transmit_power=0.5,
-            noise_power=1e-9,
+            noise_power=self.config.a2a_noise_power,
         )
 
         self.uav = UAV(
