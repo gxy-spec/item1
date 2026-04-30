@@ -65,6 +65,9 @@ def plot_training_curves(csv_path: str | Path, output_dir: str | Path = "rl/outp
     fig, axes = plt.subplots(3, 2, figsize=(14, 11), sharex=True)
     fig.suptitle("Training Curves", fontsize=14)
 
+    has_saoi = "avg_saoi" in data and "avg_saoi_ma20" in data and data.get("avg_saoi")
+    has_aoi_ma20 = "avg_aoi_ma20" in data and data.get("avg_aoi_ma20")
+
     axes[0, 0].plot(episodes, data["reward"], label="reward", alpha=0.45)
     axes[0, 0].plot(episodes, data["reward_ma20"], label="reward_ma20", linewidth=2)
     axes[0, 0].set_title("Reward")
@@ -72,10 +75,19 @@ def plot_training_curves(csv_path: str | Path, output_dir: str | Path = "rl/outp
     axes[0, 0].grid(True, linestyle="--", alpha=0.4)
     axes[0, 0].legend()
 
-    axes[0, 1].plot(episodes, data["avg_aoi"], label="avg_aoi", alpha=0.45)
-    axes[0, 1].plot(episodes, data["avg_aoi_ma20"], label="avg_aoi_ma20", linewidth=2)
-    axes[0, 1].set_title("Average AoI")
-    axes[0, 1].set_ylabel("AoI")
+    if has_saoi:
+        axes[0, 1].plot(episodes, data["avg_saoi"], label="avg_saoi", alpha=0.45, color="tab:red")
+        axes[0, 1].plot(episodes, data["avg_saoi_ma20"], label="avg_saoi_ma20", linewidth=2, color="tab:red")
+        if "avg_aoi" in data and data.get("avg_aoi"):
+            axes[0, 1].plot(episodes, data["avg_aoi"], label="avg_aoi(ref)", alpha=0.30, color="tab:blue")
+        axes[0, 1].set_title("Average SAoI")
+        axes[0, 1].set_ylabel("SAoI")
+    else:
+        axes[0, 1].plot(episodes, data["avg_aoi"], label="avg_aoi", alpha=0.45)
+        if has_aoi_ma20:
+            axes[0, 1].plot(episodes, data["avg_aoi_ma20"], label="avg_aoi_ma20", linewidth=2)
+        axes[0, 1].set_title("Average AoI")
+        axes[0, 1].set_ylabel("AoI")
     axes[0, 1].grid(True, linestyle="--", alpha=0.4)
     axes[0, 1].legend()
 
