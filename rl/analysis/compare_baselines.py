@@ -43,12 +43,12 @@ def summarise_eval_policy(path: str | Path, policy_name: str, reward_key: str, a
 
 def plot_comparison(summaries: list[dict[str, float]], output_dir: Path) -> Path:
     metrics = [
-        ("reward", "Reward", False),
-        ("avg_aoi", "Average AoI", True),
-        ("success_rate", "Success Rate", False),
-        ("charge_steps", "Charging-related Steps", True),
-        ("final_energy", "Final Energy", False),
-        ("queue", "Queue", True),
+        ("reward", "Reward", "Reward (a.u.)", False),
+        ("avg_aoi", "Average AoI", "AoI (time slots)", True),
+        ("success_rate", "Success Rate", "Success Rate (-)", False),
+        ("charge_steps", "Charging-related Steps", "Steps per episode", True),
+        ("final_energy", "Final Energy", "Energy (J)", False),
+        ("queue", "Average Queue", "Queue (J)", True),
     ]
     labels = [item["policy"] for item in summaries]
 
@@ -56,12 +56,14 @@ def plot_comparison(summaries: list[dict[str, float]], output_dir: Path) -> Path
     fig.suptitle("Baseline Comparison (DQN vs SAC vs Assoc-SAC)", fontsize=14)
     flat_axes = axes.flatten()
 
-    for ax, (key, title, lower_is_better) in zip(flat_axes, metrics):
+    for ax, (key, title, ylabel, lower_is_better) in zip(flat_axes, metrics):
         values = [item[key] for item in summaries]
         bars = ax.bar(labels, values, color=["tab:blue", "tab:orange", "tab:green"][: len(values)])
-        ax.set_title(title)
+        arrow = "↓" if lower_is_better else "↑"
+        ax.set_title(f"{title} ({arrow})")
         ax.grid(True, axis="y", linestyle="--", alpha=0.4)
-        ax.set_ylabel("Lower is better" if lower_is_better else "Higher is better")
+        ax.set_xlabel("Baseline")
+        ax.set_ylabel(ylabel)
         for bar, value in zip(bars, values):
             ax.text(
                 bar.get_x() + bar.get_width() / 2.0,

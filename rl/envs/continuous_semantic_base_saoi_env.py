@@ -26,6 +26,8 @@ class ContinuousSemanticBaseSAoIEnvConfig(OFDMAAoIEnvConfig):
     semantic_image_size: float = 32
     semantic_cost_weight: float = 0.1
     semantic_mask_mode: str = "uniform"
+    semantic_soft_success: bool = True
+    semantic_packet_scale: float = 1.0
 
 
 class ContinuousSemanticBaseSAoIEnv(SingleUAVOFDMAAoIEnv):
@@ -84,6 +86,15 @@ class ContinuousSemanticBaseSAoIEnv(SingleUAVOFDMAAoIEnv):
             self.config.compression_ratio_min
             + clipped * (self.config.compression_ratio_max - self.config.compression_ratio_min)
         )
+
+    def _required_bit_rate(self) -> float:
+        return float(self.config.packet_size_bits / self.config.delta_t)
+
+    def _required_semantic_rate(self, compression_ratio: float) -> float:
+        if not self.config.semantic_soft_success:
+            return self._required_bit_rate()
+        semantic_bits = self.config.packet_size_bits * self.config.semantic_packet_scale * compression_ratio
+        return float(semantic_bits / self.config.delta_t)
 
     def _semantic_freshness_gain(self, semantic_quality: float, semantic_utility: float) -> float:
         utility_score = 1.0 / (1.0 + np.exp(-self.config.semantic_utility_scale * semantic_utility))
@@ -156,6 +167,7 @@ class ContinuousSemanticBaseSAoIEnv(SingleUAVOFDMAAoIEnv):
         link_info = self._get_ofdma_link_info(selected_ue)
         rate = float(link_info["rate"])
         success = False
+        bit_success = False
         semantic_attempt = False
         semantic_quality = 0.0
         semantic_utility = 0.0
@@ -163,8 +175,10 @@ class ContinuousSemanticBaseSAoIEnv(SingleUAVOFDMAAoIEnv):
 
         if selected_ue is not None and self.uav.energy_state == "normal":
             semantic_attempt = True
-            required_rate = self.config.packet_size_bits / self.config.delta_t
-            success = rate >= required_rate
+            bit_required_rate = self._required_bit_rate()
+            semantic_required_rate = self._required_semantic_rate(compression_ratio)
+            bit_success = rate >= bit_required_rate
+            success = rate >= semantic_required_rate
             if success:
                 mean_sinr = max(float(link_info["mean_sinr"]), 1e-10)
                 semantic_result = self.semantic_module.transmit(
@@ -177,7 +191,7 @@ class ContinuousSemanticBaseSAoIEnv(SingleUAVOFDMAAoIEnv):
                 semantic_utility = semantic_result.semantic_utility
                 semantic_cost = semantic_result.transmission_cost
 
-        self._update_aoi(selected_ue, success)
+        self._update_aoi(selected_ue, bit_success)
         self._update_saoi(selected_ue, success, semantic_quality, semantic_utility)
         energy_info = self._update_energy(selected_ue, charge_flag)
 
@@ -220,6 +234,9 @@ class ContinuousSemanticBaseSAoIEnv(SingleUAVOFDMAAoIEnv):
             "selected_ue": None if selected_ue is None else selected_ue.uid,
             "selected_target_idx": int(target_idx),
             "success": success,
+            "bit_success": bit_success,
+            "bit_required_rate_mbps": float(bit_required_rate / 1e6) if selected_ue is not None and self.uav.energy_state == "normal" else 0.0,
+            "semantic_required_rate_mbps": float(semantic_required_rate / 1e6) if selected_ue is not None and self.uav.energy_state == "normal" else 0.0,
             "rate": rate,
             "energy": float(self.uav.energy),
             "energy_state": self.uav.energy_state,
@@ -231,6 +248,13 @@ class ContinuousSemanticBaseSAoIEnv(SingleUAVOFDMAAoIEnv):
             "assigned_rbs": link_info["assigned_rbs"],
             "mean_sinr": float(link_info["mean_sinr"]),
             "covered_ues": int(link_info["covered_ues"]),
+            "bandwidth_alloc": link_info["bandwidth_alloc"],
+            "power_alloc": link_info["power_alloc"],
+            "mean_bandwidth_alloc": float(link_info["mean_bandwidth_alloc"]),
+            "mean_power_alloc": float(link_info["mean_power_alloc"]),
+            "sum_bandwidth_alloc": float(link_info["sum_bandwidth_alloc"]),
+            "sum_power_alloc": float(link_info["sum_power_alloc"]),
+            "resource_allocation_mode": link_info["resource_allocation_mode"],
             "action_ax": float(np.clip(action[0], -1.0, 1.0)),
             "action_ay": float(np.clip(action[1], -1.0, 1.0)),
             "action_charge_bias": float(np.clip(action[2], 0.0, 1.0)),

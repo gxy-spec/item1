@@ -77,29 +77,37 @@ def heuristic_warmup_action(
     noise_std_ratio: float,
 ) -> np.ndarray:
     base_action = continuous_rule_semantic_policy(env, obs).astype(np.float32)
-    noise = np.array(
-        [
-            env.rng.normal(0.0, noise_std_xy),
-            env.rng.normal(0.0, noise_std_xy),
-            env.rng.normal(0.0, noise_std_charge),
-            env.rng.normal(0.0, noise_std_service),
-            env.rng.normal(0.0, noise_std_ratio),
-        ],
-        dtype=np.float32,
-    )
+    noise = np.zeros_like(base_action)
+    noise[0] = env.rng.normal(0.0, noise_std_xy)
+    noise[1] = env.rng.normal(0.0, noise_std_xy)
+    noise[2] = env.rng.normal(0.0, noise_std_charge)
+    if env.config.multi_user_association:
+        noise[3:-1] = env.rng.normal(0.0, noise_std_service, size=env.config.num_ues)
+    else:
+        noise[3] = env.rng.normal(0.0, noise_std_service)
+    noise[-1] = env.rng.normal(0.0, noise_std_ratio)
     action = base_action + noise
     action[0] = float(np.clip(action[0], -1.0, 1.0))
     action[1] = float(np.clip(action[1], -1.0, 1.0))
     action[2] = float(np.clip(action[2], 0.0, 1.0))
-    action[3] = float(np.clip(action[3], 0.0, 1.0))
-    action[4] = float(np.clip(action[4], 0.0, 1.0))
+    if env.config.multi_user_association:
+        action[3:-1] = np.clip(action[3:-1], 0.0, 1.0)
+    else:
+        action[3] = float(np.clip(action[3], 0.0, 1.0))
+    action[-1] = float(np.clip(action[-1], 0.0, 1.0))
     return action
 
 
 def train(args: argparse.Namespace) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     env = ContinuousSemanticSAoIEnv(
-        ContinuousSemanticSAoIEnvConfig(max_steps=args.max_steps, num_ues=args.num_ues, seed=args.seed)
+        ContinuousSemanticSAoIEnvConfig(
+            max_steps=args.max_steps,
+            num_ues=args.num_ues,
+            seed=args.seed,
+            multi_user_association=args.multi_user_association,
+            association_threshold=args.association_threshold,
+        )
     )
     agent = SACAgent(
         obs_dim=env.observation_dim,
@@ -196,10 +204,8 @@ def train(args: argparse.Namespace) -> None:
                 mean_saois.append(info["mean_saoi"])
                 mean_aois.append(info["mean_aoi"])
                 min_energy = min(min_energy, float(info["energy"]))
-                if info["selected_ue"] is not None:
-                    service_attempts += 1
-                if info["success"]:
-                    success_updates += 1
+                service_attempts += int(info.get("selected_user_count", 1 if info["selected_ue"] is not None else 0))
+                success_updates += int(info.get("success_count", 1 if info["success"] else 0))
                 if info["energy_state"] in {"return", "charging", "resume"}:
                     charge_steps += 1
                 queue_values.append(float(info["virtual_energy_queue"]))
@@ -299,6 +305,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--guided-noise-service", type=float, default=0.08)
     parser.add_argument("--guided-noise-ratio", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--multi-user-association", action="store_true")
+    parser.add_argument("--association-threshold", type=float, default=0.5)
     parser.add_argument("--output-dir", type=str, default="rl/outputs/training/logs")
     parser.add_argument("--plot-output-dir", type=str, default="rl/outputs/training/plots")
     parser.add_argument("--model-output-dir", type=str, default="rl/outputs/training/models")

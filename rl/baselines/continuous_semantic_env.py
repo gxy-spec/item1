@@ -8,16 +8,16 @@ from rl.envs import ContinuousSemanticSAoIEnv, ContinuousSemanticSAoIEnvConfig
 
 
 def random_semantic_continuous_policy(env: ContinuousSemanticSAoIEnv, obs: np.ndarray) -> np.ndarray:
-    return np.array(
-        [
-            env.rng.uniform(-1.0, 1.0),
-            env.rng.uniform(-1.0, 1.0),
-            env.rng.uniform(0.0, 1.0),
-            env.rng.uniform(0.0, 1.0),
-            env.rng.uniform(0.0, 1.0),
-        ],
-        dtype=float,
-    )
+    action = np.zeros(env.action_dim, dtype=float)
+    action[0] = env.rng.uniform(-1.0, 1.0)
+    action[1] = env.rng.uniform(-1.0, 1.0)
+    action[2] = env.rng.uniform(0.0, 1.0)
+    if env.config.multi_user_association:
+        action[3:-1] = env.rng.uniform(0.0, 1.0, size=env.config.num_ues)
+    else:
+        action[3] = env.rng.uniform(0.0, 1.0)
+    action[-1] = env.rng.uniform(0.0, 1.0)
+    return action
 
 
 def _normalize(vec: np.ndarray) -> np.ndarray:
@@ -52,6 +52,17 @@ def continuous_rule_semantic_policy(env: ContinuousSemanticSAoIEnv, obs: np.ndar
     # Higher AoI -> prefer higher compression ratio (better quality)
     max_aoi = max(float(np.max(env.aoi)), 1e-6)
     ratio_action = float(np.clip(env.aoi[target_idx] / max_aoi, 0.0, 1.0))
+
+    if env.config.multi_user_association:
+        max_score = max(max(scores), 1e-6)
+        association_scores = np.clip(np.asarray(scores, dtype=float) / max_score, 0.0, 1.0)
+        return np.concatenate(
+            [
+                np.array([move_dir[0], move_dir[1], charge_bias], dtype=float),
+                association_scores,
+                np.array([ratio_action], dtype=float),
+            ]
+        )
 
     return np.array([move_dir[0], move_dir[1], charge_bias, (target_idx + 0.5) / env.config.num_ues, ratio_action], dtype=float)
 
@@ -88,10 +99,8 @@ def run_semantic_policy_episode(
         mean_aois.append(info["mean_aoi"])
         if info["energy_state"] in {"return", "charging", "resume"}:
             charge_steps += 1
-        if info["success"]:
-            success_updates += 1
-        if info["selected_ue"] is not None:
-            service_attempts += 1
+        success_updates += int(info.get("success_count", 1 if info["success"] else 0))
+        service_attempts += int(info.get("selected_user_count", 1 if info["selected_ue"] is not None else 0))
         queue_values.append(float(info["virtual_energy_queue"]))
         max_queue = max(max_queue, float(info["virtual_energy_queue"]))
 

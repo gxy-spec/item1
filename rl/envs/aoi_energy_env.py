@@ -26,7 +26,7 @@ class AoIEnvConfig:
     uav_hmin: float = 150.0
     uav_hmax: float = 300.0
     service_radius: float = 180.0
-    move_speed: float = 12.0
+    move_speed: float = 10.0
     vertical_speed: float = 6.0
     packet_size_bits: float = 2e5
     lyapunov_v: float = 2.0
@@ -39,6 +39,10 @@ class AoIEnvConfig:
     charge_step_penalty: float = 0.02
     a2g_noise_power: float = 1e-13
     a2a_noise_power: float = 1e-13
+    energy_max: float = 8000.0
+    energy_return_threshold: float = 0.12
+    energy_recovery_threshold: float = 0.6
+    energy_hap_power: float = 450.0
     energy_hard_constraint: bool = True
     terminate_on_depleted: bool = False
     seed: int = 42
@@ -56,7 +60,12 @@ class SingleUAVAoIEnv:
         self.current_step = 0
 
         self.hap = HAP(position=self.config.hap_position)
-        self.energy_model = EnergyModel()
+        self.energy_model = EnergyModel(
+            E_max=self.config.energy_max,
+            return_threshold=self.config.energy_return_threshold,
+            recovery_threshold=self.config.energy_recovery_threshold,
+            P_HAP=self.config.energy_hap_power,
+        )
         self.a2g_channel = A2GChannel(
             a=9.61,
             b=0.16,
@@ -339,7 +348,12 @@ class SingleUAVAoIEnv:
         forced_movement = self.MOVEMENTS.index("hover")
         return 1, forced_movement, 0, True
 
-    def _update_energy(self, selected_ue: UE | None, charge_flag: int) -> Dict[str, float]:
+    def _update_energy(
+        self,
+        selected_ue: UE | None,
+        charge_flag: int,
+        tx_user_count: int | None = None,
+    ) -> Dict[str, float]:
         a2a_metrics = self.a2a_channel.compute_link_metrics(self.uav, self.hap)
         channel_gain = a2a_metrics["gain"]
 
@@ -354,7 +368,10 @@ class SingleUAVAoIEnv:
             e_charge = 0.0
         else:
             e_fly = self.energy_model.flying_energy(self.uav.velocity, self.config.delta_t)
-            num_covered = 1 if selected_ue is not None and self._is_covered(selected_ue) else 0
+            if tx_user_count is None:
+                num_covered = 1 if selected_ue is not None and self._is_covered(selected_ue) else 0
+            else:
+                num_covered = max(int(tx_user_count), 0)
             e_tx = self.energy_model.tx_energy(num_covered, self.config.delta_t)
             e_charge = self.energy_model.charging_energy(channel_gain, self.config.delta_t)
 

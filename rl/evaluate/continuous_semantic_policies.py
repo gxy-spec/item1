@@ -76,10 +76,8 @@ def run_semantic_sac_episode(model_path: str, config: ContinuousSemanticSAoIEnvC
         mean_aois.append(info["mean_aoi"])
         if info["energy_state"] in {"return", "charging", "resume"}:
             charge_steps += 1
-        if info["success"]:
-            success_updates += 1
-        if info["selected_ue"] is not None:
-            service_attempts += 1
+        success_updates += int(info.get("success_count", 1 if info["success"] else 0))
+        service_attempts += int(info.get("selected_user_count", 1 if info["selected_ue"] is not None else 0))
         queue_values.append(float(info["virtual_energy_queue"]))
         max_queue = max(max_queue, float(info["virtual_energy_queue"]))
 
@@ -142,9 +140,17 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output-dir", type=str, default="rl/outputs/evaluation/continuous_semantic")
     parser.add_argument("--semantic-sac-model", type=str, default=None)
+    parser.add_argument("--multi-user-association", action="store_true")
+    parser.add_argument("--association-threshold", type=float, default=0.5)
     args = parser.parse_args()
 
-    config = ContinuousSemanticSAoIEnvConfig(max_steps=args.max_steps, num_ues=args.num_ues, seed=args.seed)
+    config = ContinuousSemanticSAoIEnvConfig(
+        max_steps=args.max_steps,
+        num_ues=args.num_ues,
+        seed=args.seed,
+        multi_user_association=args.multi_user_association,
+        association_threshold=args.association_threshold,
+    )
     policies = ["random_semantic_continuous", "continuous_rule_semantic"]
     if args.semantic_sac_model:
         policies.append("semantic_sac")

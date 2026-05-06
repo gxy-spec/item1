@@ -63,7 +63,7 @@ def plot_training_curves(csv_path: str | Path, output_dir: str | Path = "rl/outp
     base_name = f"{prefix}_{timestamp}"
 
     fig, axes = plt.subplots(3, 2, figsize=(14, 11), sharex=True)
-    fig.suptitle("Training Curves", fontsize=14)
+    fig.suptitle("Training Metrics", fontsize=14)
 
     has_saoi = "avg_saoi" in data and "avg_saoi_ma20" in data and data.get("avg_saoi")
     has_aoi_ma20 = "avg_aoi_ma20" in data and data.get("avg_aoi_ma20")
@@ -71,7 +71,7 @@ def plot_training_curves(csv_path: str | Path, output_dir: str | Path = "rl/outp
     axes[0, 0].plot(episodes, data["reward"], label="reward", alpha=0.45)
     axes[0, 0].plot(episodes, data["reward_ma20"], label="reward_ma20", linewidth=2)
     axes[0, 0].set_title("Reward")
-    axes[0, 0].set_ylabel("Reward")
+    axes[0, 0].set_ylabel("Reward (a.u.)")
     axes[0, 0].grid(True, linestyle="--", alpha=0.4)
     axes[0, 0].legend()
 
@@ -81,40 +81,40 @@ def plot_training_curves(csv_path: str | Path, output_dir: str | Path = "rl/outp
         if "avg_aoi" in data and data.get("avg_aoi"):
             axes[0, 1].plot(episodes, data["avg_aoi"], label="avg_aoi(ref)", alpha=0.30, color="tab:blue")
         axes[0, 1].set_title("Average SAoI")
-        axes[0, 1].set_ylabel("SAoI")
+        axes[0, 1].set_ylabel("SAoI (time slots)")
     else:
         axes[0, 1].plot(episodes, data["avg_aoi"], label="avg_aoi", alpha=0.45)
         if has_aoi_ma20:
             axes[0, 1].plot(episodes, data["avg_aoi_ma20"], label="avg_aoi_ma20", linewidth=2)
         axes[0, 1].set_title("Average AoI")
-        axes[0, 1].set_ylabel("AoI")
+        axes[0, 1].set_ylabel("AoI (time slots)")
     axes[0, 1].grid(True, linestyle="--", alpha=0.4)
     axes[0, 1].legend()
 
     axes[1, 0].plot(episodes, data["queue"], label="queue", color="tab:red", linewidth=2)
     axes[1, 0].set_title("Virtual Energy Queue")
-    axes[1, 0].set_ylabel("Queue")
+    axes[1, 0].set_ylabel("Queue (J)")
     axes[1, 0].grid(True, linestyle="--", alpha=0.4)
     axes[1, 0].legend()
 
     axes[1, 1].plot(episodes, data["success_rate"], label="success_rate", color="tab:green", linewidth=2)
     axes[1, 1].set_title("Update Success Rate")
-    axes[1, 1].set_ylabel("Success Rate")
+    axes[1, 1].set_ylabel("Success Rate (-)")
     axes[1, 1].grid(True, linestyle="--", alpha=0.4)
     axes[1, 1].legend()
 
     axes[2, 0].plot(episodes, data["final_energy"], label="final_energy", color="tab:orange", linewidth=2)
     axes[2, 0].plot(episodes, data["min_energy"], label="min_energy", color="tab:brown", alpha=0.75)
-    axes[2, 0].set_title("Energy")
-    axes[2, 0].set_xlabel("Episode")
-    axes[2, 0].set_ylabel("Energy")
+    axes[2, 0].set_title("Battery Energy")
+    axes[2, 0].set_xlabel("Episode index")
+    axes[2, 0].set_ylabel("Energy (J)")
     axes[2, 0].grid(True, linestyle="--", alpha=0.4)
     axes[2, 0].legend()
 
     axes[2, 1].plot(episodes, data["charge_steps"], label="charge_steps", color="tab:purple", linewidth=2)
     axes[2, 1].set_title("Charging-related Steps")
-    axes[2, 1].set_xlabel("Episode")
-    axes[2, 1].set_ylabel("Steps")
+    axes[2, 1].set_xlabel("Episode index")
+    axes[2, 1].set_ylabel("Steps per episode")
     axes[2, 1].grid(True, linestyle="--", alpha=0.4)
     axes[2, 1].legend()
 
