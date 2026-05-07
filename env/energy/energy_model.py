@@ -33,6 +33,7 @@ class EnergyModel:
         P_HAP: float = 300.0,                  # HAP发射功率（W）- 提高功率以增强充电效果
         # 电池参数
         E_max: float = 5000.0,                 # 最大电池容量（J）
+        flight_energy_scale: float = 1.0,      # 飞行能耗缩放系数
         # 状态转换阈值
         return_threshold: float = 0.2,         # 返回充电的电量阈值（相对E_max）
         recovery_threshold: float = 0.8,       # 恢复正常运动的电量阈值（相对E_max）
@@ -54,6 +55,7 @@ class EnergyModel:
             eta: 能量转换效率（无量纲，0.5-0.9）
             P_HAP: HAP发射功率（W）
             E_max: 最大电池容量（J）
+            flight_energy_scale: 飞行能耗缩放系数
             return_threshold: 返回充电的电量阈值（相对E_max）
             recovery_threshold: 恢复正常的电量阈值（相对E_max）
             charging_distance: 充电距离阈值（m）
@@ -77,6 +79,7 @@ class EnergyModel:
         
         # 电池参数
         self.E_max = float(E_max)
+        self.flight_energy_scale = float(flight_energy_scale)
         self.return_threshold = float(return_threshold)
         self.recovery_threshold = float(recovery_threshold)
         self.charging_distance = float(charging_distance)
@@ -157,7 +160,7 @@ class EnergyModel:
             飞行能耗（J）
         """
         P_fly = self.flying_power(velocity)
-        E_fly = P_fly * delta_t
+        E_fly = self.flight_energy_scale * P_fly * delta_t
         return float(E_fly)
 
     # ========================================

@@ -15,6 +15,10 @@ from rl.baselines.continuous_semantic_env import continuous_rule_semantic_policy
 from rl.envs import ContinuousSemanticSAoIEnv, ContinuousSemanticSAoIEnvConfig
 
 
+def add_experiment_caption(fig: plt.Figure, experiment_name: str) -> None:
+    fig.text(0.5, 0.012, f"Experiment: {experiment_name}", ha="center", va="bottom", fontsize=10)
+
+
 def ensure_unique_path(output_dir: Path, prefix: str, suffix: str) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -203,24 +207,32 @@ def save_trace_csv(
     return csv_path
 
 
-def plot_heatmap(data: np.ndarray, title: str, colorbar_label: str, output_dir: Path, prefix: str) -> Path:
+def plot_heatmap(
+    data: np.ndarray,
+    title: str,
+    colorbar_label: str,
+    output_dir: Path,
+    prefix: str,
+    experiment_name: str,
+) -> Path:
     fig, ax = plt.subplots(figsize=(12, 4.5))
     image = ax.imshow(data, aspect="auto", cmap="viridis", origin="lower")
     ax.set_title(title)
-    ax.set_xlabel("Time slot index")
-    ax.set_ylabel("User index")
+    ax.set_xlabel("Time slot index (-)")
+    ax.set_ylabel("User index (-)")
     ax.set_yticks(np.arange(data.shape[0]))
     ax.set_yticklabels([f"UE {idx + 1}" for idx in range(data.shape[0])])
     colorbar = fig.colorbar(image, ax=ax)
     colorbar.set_label(colorbar_label)
-    fig.tight_layout()
+    add_experiment_caption(fig, experiment_name)
+    fig.tight_layout(rect=[0, 0.04, 1, 1])
     path = ensure_unique_path(output_dir, prefix, ".png")
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return path
 
 
-def plot_saoi(saoi: np.ndarray, output_dir: Path) -> Path:
+def plot_saoi(saoi: np.ndarray, output_dir: Path, experiment_name: str) -> Path:
     steps = np.arange(1, saoi.shape[1] + 1)
     fig, ax = plt.subplots(figsize=(12, 5))
     for user_idx in range(saoi.shape[0]):
@@ -228,18 +240,19 @@ def plot_saoi(saoi: np.ndarray, output_dir: Path) -> Path:
     if saoi.size:
         ax.plot(steps, np.mean(saoi, axis=0), linestyle="--", linewidth=2.2, color="black", label="Mean SAoI")
     ax.set_title("Per-user SAoI Evolution")
-    ax.set_xlabel("Time slot index")
+    ax.set_xlabel("Time slot index (-)")
     ax.set_ylabel("SAoI (time slots)")
     ax.grid(True, linestyle="--", alpha=0.35)
     ax.legend(ncol=2, fontsize=9)
-    fig.tight_layout()
+    add_experiment_caption(fig, experiment_name)
+    fig.tight_layout(rect=[0, 0.04, 1, 1])
     path = ensure_unique_path(output_dir, "saoi_per_user", ".png")
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return path
 
 
-def plot_uav_state(diagnostics: List[Dict], output_dir: Path) -> Path:
+def plot_uav_state(diagnostics: List[Dict], output_dir: Path, experiment_name: str) -> Path:
     steps = np.arange(1, len(diagnostics) + 1)
     state_codes = np.array(
         [ENERGY_STATE_TO_CODE.get(str(item.get("energy_state", "unknown")), -1) for item in diagnostics],
@@ -249,8 +262,8 @@ def plot_uav_state(diagnostics: List[Dict], output_dir: Path) -> Path:
 
     fig, ax1 = plt.subplots(figsize=(12, 4.5))
     ax1.step(steps, state_codes, where="mid", color="tab:red", linewidth=2, label="UAV energy state")
-    ax1.set_xlabel("Time slot index")
-    ax1.set_ylabel("UAV state code")
+    ax1.set_xlabel("Time slot index (-)")
+    ax1.set_ylabel("UAV state code (-)")
     ax1.set_yticks(list(ENERGY_STATE_TO_CODE.values()))
     ax1.set_yticklabels(list(ENERGY_STATE_TO_CODE.keys()))
     ax1.grid(True, linestyle="--", alpha=0.35)
@@ -263,14 +276,20 @@ def plot_uav_state(diagnostics: List[Dict], output_dir: Path) -> Path:
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
     ax1.set_title("UAV Energy State and Remaining Energy")
-    fig.tight_layout()
+    add_experiment_caption(fig, experiment_name)
+    fig.tight_layout(rect=[0, 0.04, 1, 1])
     path = ensure_unique_path(output_dir, "uav_state_trace", ".png")
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return path
 
 
-def plot_user_activity(diagnostics: List[Dict], output_dir: Path) -> Path:
+def plot_user_activity(
+    diagnostics: List[Dict],
+    output_dir: Path,
+    experiment_name: str,
+    include_bit_success: bool = False,
+) -> Path:
     steps = np.arange(1, len(diagnostics) + 1)
     covered_counts = np.array([int(item.get("covered_ues_count", 0)) for item in diagnostics], dtype=float)
     selected_counts = np.array([int(item.get("selected_user_count", 0)) for item in diagnostics], dtype=float)
@@ -281,13 +300,15 @@ def plot_user_activity(diagnostics: List[Dict], output_dir: Path) -> Path:
     ax.plot(steps, covered_counts, linewidth=2.0, color="tab:blue", label="Covered users")
     ax.plot(steps, selected_counts, linewidth=2.0, color="tab:orange", label="Associated/active users")
     ax.plot(steps, success_counts, linewidth=1.8, color="tab:green", label="Semantic-success users")
-    ax.plot(steps, bit_success_counts, linewidth=1.8, color="tab:red", linestyle="--", label="Bit-success users")
-    ax.set_title("User Coverage, Association and Success Counts")
-    ax.set_xlabel("Time slot index")
-    ax.set_ylabel("User count")
+    if include_bit_success:
+        ax.plot(steps, bit_success_counts, linewidth=1.8, color="tab:red", linestyle="--", label="Bit-success users")
+    ax.set_title("User Coverage, Activation and Successful Updates")
+    ax.set_xlabel("Time slot index (-)")
+    ax.set_ylabel("User count (-)")
     ax.grid(True, linestyle="--", alpha=0.35)
     ax.legend()
-    fig.tight_layout()
+    add_experiment_caption(fig, experiment_name)
+    fig.tight_layout(rect=[0, 0.04, 1, 1])
     path = ensure_unique_path(output_dir, "user_activity_trace", ".png")
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -300,7 +321,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-ues", type=int, default=5)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--policy", type=str, default="rule", choices=["rule", "random", "force_multi_covered", "semantic_sac"])
-    parser.add_argument("--resource-allocation-mode", type=str, default="uniform", choices=["fixed", "uniform"])
+    parser.add_argument("--resource-allocation-mode", type=str, default="uniform", choices=["fixed", "uniform", "kkt"])
     parser.add_argument("--scheduler-mode", type=str, default="aoi_weighted", choices=["round_robin", "equal_share", "aoi_weighted"])
     parser.add_argument("--service-radius", type=float, default=180.0)
     parser.add_argument("--move-speed", type=float, default=10.0)
@@ -312,6 +333,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--association-threshold", type=float, default=0.5)
     parser.add_argument("--semantic-sac-model", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default="rl/outputs/resource_plots")
+    parser.add_argument("--experiment-name", type=str, default=None)
+    parser.add_argument("--include-user-activity", action="store_true")
+    parser.add_argument("--include-bit-success", action="store_true")
     return parser
 
 
@@ -320,6 +344,7 @@ def main() -> None:
     if args.policy == "semantic_sac" and not args.semantic_sac_model:
         raise ValueError("--semantic-sac-model is required when --policy semantic_sac is used")
     output_dir = Path(args.output_dir)
+    experiment_name = args.experiment_name or f"{args.policy}_{args.resource_allocation_mode}"
 
     bandwidth, power, saoi, diagnostics = rollout_trace(args)
     csv_path = save_trace_csv(output_dir, bandwidth, power, saoi, diagnostics)
@@ -331,6 +356,7 @@ def main() -> None:
         colorbar_label="Bandwidth (MHz)",
         output_dir=output_dir,
         prefix="bandwidth_allocation",
+        experiment_name=experiment_name,
     )
     print(f"saved_plot(bandwidth_allocation)={bandwidth_path}")
 
@@ -340,17 +366,24 @@ def main() -> None:
         colorbar_label="Power (mW)",
         output_dir=output_dir,
         prefix="power_allocation",
+        experiment_name=experiment_name,
     )
     print(f"saved_plot(power_allocation)={power_path}")
 
-    saoi_path = plot_saoi(saoi, output_dir=output_dir)
+    saoi_path = plot_saoi(saoi, output_dir=output_dir, experiment_name=experiment_name)
     print(f"saved_plot(saoi_per_user)={saoi_path}")
 
-    uav_state_path = plot_uav_state(diagnostics, output_dir=output_dir)
+    uav_state_path = plot_uav_state(diagnostics, output_dir=output_dir, experiment_name=experiment_name)
     print(f"saved_plot(uav_state_trace)={uav_state_path}")
 
-    user_activity_path = plot_user_activity(diagnostics, output_dir=output_dir)
-    print(f"saved_plot(user_activity_trace)={user_activity_path}")
+    if args.include_user_activity:
+        user_activity_path = plot_user_activity(
+            diagnostics,
+            output_dir=output_dir,
+            experiment_name=experiment_name,
+            include_bit_success=args.include_bit_success,
+        )
+        print(f"saved_plot(user_activity_trace)={user_activity_path}")
 
 
 if __name__ == "__main__":

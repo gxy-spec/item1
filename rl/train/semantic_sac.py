@@ -107,6 +107,7 @@ def train(args: argparse.Namespace) -> None:
             seed=args.seed,
             multi_user_association=args.multi_user_association,
             association_threshold=args.association_threshold,
+            resource_allocation_mode=args.resource_allocation_mode,
         )
     )
     agent = SACAgent(
@@ -307,6 +308,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--multi-user-association", action="store_true")
     parser.add_argument("--association-threshold", type=float, default=0.5)
+    parser.add_argument("--resource-allocation-mode", type=str, default="uniform", choices=["fixed", "uniform", "kkt"])
     parser.add_argument("--output-dir", type=str, default="rl/outputs/training/logs")
     parser.add_argument("--plot-output-dir", type=str, default="rl/outputs/training/plots")
     parser.add_argument("--model-output-dir", type=str, default="rl/outputs/training/models")

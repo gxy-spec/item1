@@ -14,6 +14,10 @@ from rl.baselines.continuous_semantic_env import run_semantic_policy_episode
 from rl.envs import ContinuousSemanticSAoIEnv, ContinuousSemanticSAoIEnvConfig
 
 
+def add_experiment_caption(fig: plt.Figure, experiment_name: str) -> None:
+    fig.text(0.5, 0.012, f"Experiment: {experiment_name}", ha="center", va="bottom", fontsize=10)
+
+
 def ensure_unique_path(output_dir: Path, prefix: str, suffix: str) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -98,34 +102,41 @@ def run_semantic_sac_episode(model_path: str, config: ContinuousSemanticSAoIEnvC
     }
 
 
-def plot_policy_comparison(all_rows: list[dict[str, float]], output_dir: Path) -> Path:
+def plot_policy_comparison(
+    all_rows: list[dict[str, float]],
+    output_dir: Path,
+    experiment_name: str = "continuous_semantic_policy_evaluation",
+) -> Path:
     policies = sorted({str(row["policy"]) for row in all_rows})
     metrics = [
-        ("episode_reward", "Reward", False),
-        ("avg_mean_saoi", "Average SAoI", True),
-        ("avg_mean_aoi", "Average AoI", True),
-        ("success_rate", "Success Rate", False),
-        ("final_energy", "Final Energy", False),
-        ("avg_queue", "Average Queue", True),
+        ("episode_reward", "Reward", "Reward (a.u.)", False),
+        ("avg_mean_saoi", "Average SAoI", "SAoI (time slots)", True),
+        ("avg_mean_aoi", "Average AoI", "AoI (time slots)", True),
+        ("success_rate", "Success Rate", "Success rate (-)", False),
+        ("final_energy", "Final Energy", "Energy (J)", False),
+        ("avg_queue", "Average Queue", "Queue (J)", True),
     ]
 
     fig, axes = plt.subplots(3, 2, figsize=(14, 10))
     fig.suptitle("Continuous Semantic SAoI Policy Comparison", fontsize=14)
     flat_axes = axes.flatten()
 
-    for ax, (metric_key, title, lower_is_better) in zip(flat_axes, metrics):
+    for ax, (metric_key, title, ylabel, lower_is_better) in zip(flat_axes, metrics):
         metric_values = []
         for policy in policies:
             values = [float(row[metric_key]) for row in all_rows if str(row["policy"]) == policy]
             metric_values.append(mean(values) if values else 0.0)
         bars = ax.bar(policies, metric_values, color=["tab:blue", "tab:green", "tab:orange"][: len(policies)])
-        ax.set_title(title)
+        arrow = "↓" if lower_is_better else "↑"
+        ax.set_title(f"{title} ({arrow})")
         ax.grid(True, axis="y", linestyle="--", alpha=0.4)
-        ax.set_ylabel("Lower is better" if lower_is_better else "Higher is better")
+        ax.set_xlabel("Baseline (-)")
+        ax.set_ylabel(ylabel)
         for bar, value in zip(bars, metric_values):
             ax.text(bar.get_x() + bar.get_width() / 2.0, bar.get_height(), f"{value:.3f}", ha="center", va="bottom", fontsize=9)
 
-    fig.tight_layout(rect=[0, 0.03, 1, 0.96])
+    add_experiment_caption(fig, experiment_name)
+    fig.tight_layout(rect=[0, 0.04, 1, 0.96])
     plot_path = ensure_unique_path(output_dir, "continuous_semantic_policy_evaluation", ".png")
     fig.savefig(plot_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -142,6 +153,7 @@ def main() -> None:
     parser.add_argument("--semantic-sac-model", type=str, default=None)
     parser.add_argument("--multi-user-association", action="store_true")
     parser.add_argument("--association-threshold", type=float, default=0.5)
+    parser.add_argument("--resource-allocation-mode", type=str, default="uniform", choices=["fixed", "uniform", "kkt"])
     args = parser.parse_args()
 
     config = ContinuousSemanticSAoIEnvConfig(
@@ -150,6 +162,7 @@ def main() -> None:
         seed=args.seed,
         multi_user_association=args.multi_user_association,
         association_threshold=args.association_threshold,
+        resource_allocation_mode=args.resource_allocation_mode,
     )
     policies = ["random_semantic_continuous", "continuous_rule_semantic"]
     if args.semantic_sac_model:
@@ -201,7 +214,8 @@ def main() -> None:
         writer.writerows(all_rows)
     print(f"saved_csv(continuous_semantic_policy_evaluation)={csv_path}")
 
-    plot_path = plot_policy_comparison(all_rows, output_dir=output_dir)
+    experiment_name = f"semantic_eval_{args.resource_allocation_mode}_{'multi' if args.multi_user_association else 'single'}"
+    plot_path = plot_policy_comparison(all_rows, output_dir=output_dir, experiment_name=experiment_name)
     print(f"saved_plot(continuous_semantic_policy_evaluation)={plot_path}")
 
 

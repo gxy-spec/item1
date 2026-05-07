@@ -9,6 +9,17 @@ from typing import Dict, List
 import matplotlib.pyplot as plt
 
 
+def add_experiment_caption(fig: plt.Figure, experiment_name: str) -> None:
+    fig.text(
+        0.5,
+        0.012,
+        f"Experiment: {experiment_name}",
+        ha="center",
+        va="bottom",
+        fontsize=10,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Plot training curves from a CSV log file")
     parser.add_argument("--csv", type=str, default="rl/outputs/training/logs/training_metrics.csv", help="Path to the training metrics CSV file")
@@ -61,6 +72,7 @@ def plot_training_curves(csv_path: str | Path, output_dir: str | Path = "rl/outp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = Path(output_dir)
     base_name = f"{prefix}_{timestamp}"
+    experiment_name = prefix
 
     fig, axes = plt.subplots(3, 2, figsize=(14, 11), sharex=True)
     fig.suptitle("Training Metrics", fontsize=14)
@@ -118,7 +130,8 @@ def plot_training_curves(csv_path: str | Path, output_dir: str | Path = "rl/outp
     axes[2, 1].grid(True, linestyle="--", alpha=0.4)
     axes[2, 1].legend()
 
-    fig.tight_layout(rect=[0, 0.03, 1, 0.96])
+    add_experiment_caption(fig, experiment_name)
+    fig.tight_layout(rect=[0, 0.04, 1, 0.96])
 
     summary_path = ensure_unique_path(output_dir, f"{base_name}_summary")
     fig.savefig(summary_path, dpi=150, bbox_inches="tight")

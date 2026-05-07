@@ -40,6 +40,7 @@ class AoIEnvConfig:
     a2g_noise_power: float = 1e-13
     a2a_noise_power: float = 1e-13
     energy_max: float = 8000.0
+    energy_flight_scale: float = 0.7
     energy_return_threshold: float = 0.12
     energy_recovery_threshold: float = 0.6
     energy_hap_power: float = 450.0
@@ -62,6 +63,7 @@ class SingleUAVAoIEnv:
         self.hap = HAP(position=self.config.hap_position)
         self.energy_model = EnergyModel(
             E_max=self.config.energy_max,
+            flight_energy_scale=self.config.energy_flight_scale,
             return_threshold=self.config.energy_return_threshold,
             recovery_threshold=self.config.energy_recovery_threshold,
             P_HAP=self.config.energy_hap_power,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, List
 
 import numpy as np
 
@@ -103,6 +103,16 @@ class ContinuousSemanticBaseSAoIEnv(SingleUAVOFDMAAoIEnv):
             + self.config.semantic_utility_weight * float(utility_score)
         )
         return float(np.clip(gain, self.config.semantic_min_gain, 1.0))
+
+    def _resource_allocation_weights(self, active_ues: List) -> np.ndarray:
+        weights = np.zeros(self.config.num_ues, dtype=float)
+        if not active_ues:
+            return weights
+        active_indices = [ue.uid - 1 for ue in active_ues]
+        active_saoi = self.saoi[active_indices]
+        denom = float(np.mean(active_saoi)) + 1e-12
+        weights[active_indices] = active_saoi / denom
+        return weights
 
     def _update_saoi(self, selected_ue, success: bool, semantic_quality: float, semantic_utility: float) -> None:
         self.saoi += self.config.delta_t

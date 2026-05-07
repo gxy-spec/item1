@@ -60,6 +60,16 @@ class SingleUAVOFDMASAoIEnv(SingleUAVOFDMAAoIEnv):
         )
         return float(np.clip(gain, self.config.semantic_min_gain, 1.0))
 
+    def _resource_allocation_weights(self, active_ues: list) -> np.ndarray:
+        weights = np.zeros(self.config.num_ues, dtype=float)
+        if not active_ues:
+            return weights
+        active_indices = [ue.uid - 1 for ue in active_ues]
+        active_saoi = self.saoi[active_indices]
+        denom = float(np.mean(active_saoi)) + 1e-12
+        weights[active_indices] = active_saoi / denom
+        return weights
+
     def _required_bit_rate(self) -> float:
         return float(self.config.packet_size_bits / self.config.delta_t)
 

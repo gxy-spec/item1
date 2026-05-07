@@ -9,6 +9,17 @@ from statistics import mean
 import matplotlib.pyplot as plt
 
 
+def add_experiment_caption(fig: plt.Figure, experiment_name: str) -> None:
+    fig.text(
+        0.5,
+        0.012,
+        f"Experiment: {experiment_name}",
+        ha="center",
+        va="bottom",
+        fontsize=10,
+    )
+
+
 def ensure_unique_path(output_dir: Path, prefix: str, suffix: str) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -41,7 +52,7 @@ def summarise_eval_policy(path: str | Path, policy_name: str, reward_key: str, a
     }
 
 
-def plot_comparison(summaries: list[dict[str, float]], output_dir: Path) -> Path:
+def plot_comparison(summaries: list[dict[str, float]], output_dir: Path, experiment_name: str = "baseline_comparison") -> Path:
     metrics = [
         ("reward", "Reward", "Reward (a.u.)", False),
         ("avg_aoi", "Average AoI", "AoI (time slots)", True),
@@ -76,11 +87,12 @@ def plot_comparison(summaries: list[dict[str, float]], output_dir: Path) -> Path
 
     fig.text(
         0.02,
-        0.01,
+        0.028,
         "Note: All methods use evaluation summaries. DQN uses the discrete evaluation CSV, SAC/Assoc-SAC use continuous evaluation CSVs.",
         fontsize=9,
     )
-    fig.tight_layout(rect=[0, 0.03, 1, 0.96])
+    add_experiment_caption(fig, experiment_name)
+    fig.tight_layout(rect=[0, 0.05, 1, 0.96])
     plot_path = ensure_unique_path(output_dir, "baseline_comparison", ".png")
     fig.savefig(plot_path, dpi=150, bbox_inches="tight")
     plt.close(fig)

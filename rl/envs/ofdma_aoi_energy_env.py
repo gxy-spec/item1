@@ -7,7 +7,7 @@ from typing import Dict, List, Sequence, Tuple
 import numpy as np
 
 from env.channel import OFDMAA2GChannel, OFDMAScheduler
-from rl.resources import ResourceAllocationResult, UniformResourceAllocator
+from rl.resources import KKTResourceAllocator, ResourceAllocationResult, UniformResourceAllocator
 
 from .aoi_energy_env import AoIEnvConfig, SingleUAVAoIEnv
 
@@ -44,6 +44,11 @@ class SingleUAVOFDMAAoIEnv(SingleUAVAoIEnv):
         self.uniform_allocator = UniformResourceAllocator(
             total_bandwidth=self.config.total_bandwidth,
             total_power=self.config.total_transmit_power,
+        )
+        self.kkt_allocator = KKTResourceAllocator(
+            total_bandwidth=self.config.total_bandwidth,
+            total_power=self.config.total_transmit_power,
+            noise=self.config.noise_power_density * self.config.total_bandwidth,
         )
 
     def step(self, action: int) -> Tuple:
@@ -168,6 +173,20 @@ class SingleUAVOFDMAAoIEnv(SingleUAVAoIEnv):
                     active_ues.append(ue)
         return active_ues
 
+    def _resource_allocation_channel_gains(self, active_ues: Sequence) -> np.ndarray:
+        gains = np.zeros(self.config.num_ues, dtype=float)
+        for ue in active_ues:
+            raw_gain = float(self.ofdma_channel.power_gain(self.uav, ue))
+            gains[ue.uid - 1] = raw_gain**2
+        return gains
+
+    def _resource_allocation_weights(self, active_ues: Sequence) -> np.ndarray:
+        # TODO: replace with SAoI-aware weights in semantic SAoI environments.
+        weights = np.zeros(self.config.num_ues, dtype=float)
+        for ue in active_ues:
+            weights[ue.uid - 1] = 1.0
+        return weights
+
     def _get_ofdma_link_info(self, selected_ue, active_user_indices: Sequence[int] | None = None) -> Dict:
         if selected_ue is None or self.uav.energy_state != "normal":
             return self._empty_link_info()
@@ -183,6 +202,8 @@ class SingleUAVOFDMAAoIEnv(SingleUAVAoIEnv):
 
         if self.config.enable_resource_allocation and self.config.resource_allocation_mode == "uniform":
             return self._get_uniform_resource_link_info(selected_ue, active_ues)
+        if self.config.enable_resource_allocation and self.config.resource_allocation_mode == "kkt":
+            return self._get_kkt_resource_link_info(selected_ue, active_ues)
 
         return self._get_fixed_resource_link_info(selected_ue, active_ues)
 
@@ -200,6 +221,8 @@ class SingleUAVOFDMAAoIEnv(SingleUAVAoIEnv):
 
         if self.config.enable_resource_allocation and self.config.resource_allocation_mode == "uniform":
             return self._get_uniform_multiuser_link_info(active_ues)
+        if self.config.enable_resource_allocation and self.config.resource_allocation_mode == "kkt":
+            return self._get_kkt_multiuser_link_info(active_ues)
 
         return self._get_fixed_multiuser_link_info(active_ues)
 
@@ -279,6 +302,45 @@ class SingleUAVOFDMAAoIEnv(SingleUAVAoIEnv):
             "mean_sinr": float(mean_sinr),
             "covered_ues": len(active_ues),
             "resource_allocation_mode": "uniform",
+            **summary,
+        }
+
+    def _get_kkt_resource_link_info(self, selected_ue, active_ues: Sequence) -> Dict:
+        active_user_indices = [ue.uid - 1 for ue in active_ues]
+        channel_gains = self._resource_allocation_channel_gains(active_ues)
+        weights = self._resource_allocation_weights(active_ues)
+        allocation = self.kkt_allocator.allocate(
+            active_user_indices=active_user_indices,
+            num_users=self.config.num_ues,
+            channel_gains=channel_gains,
+            weights=weights,
+        )
+        user_idx = selected_ue.uid - 1
+        user_bandwidth = float(allocation.bandwidth[user_idx])
+        user_power = float(allocation.power[user_idx])
+
+        if user_bandwidth <= 0.0 or user_power <= 0.0:
+            summary = self._summarize_resource_allocation(allocation)
+            return {
+                "rate": 0.0,
+                "assigned_rbs": [],
+                "mean_sinr": 0.0,
+                "covered_ues": len(active_ues),
+                "resource_allocation_mode": "kkt",
+                **summary,
+            }
+
+        gain = channel_gains[user_idx]
+        noise_power = self.ofdma_channel.noise_power_density * user_bandwidth
+        mean_sinr = (user_power * gain) / max(noise_power, 1e-12)
+        rate = user_bandwidth * math.log2(1.0 + mean_sinr)
+        summary = self._summarize_resource_allocation(allocation)
+        return {
+            "rate": float(rate),
+            "assigned_rbs": [],
+            "mean_sinr": float(mean_sinr),
+            "covered_ues": len(active_ues),
+            "resource_allocation_mode": "kkt",
             **summary,
         }
 
@@ -368,6 +430,57 @@ class SingleUAVOFDMAAoIEnv(SingleUAVAoIEnv):
             "mean_sinr": float(np.mean(mean_sinrs)) if mean_sinrs else 0.0,
             "covered_ues": len(active_ues),
             "resource_allocation_mode": "uniform",
+            "per_user": per_user,
+            "selected_user_count": len(active_ues),
+            **summary,
+        }
+
+    def _get_kkt_multiuser_link_info(self, active_ues: Sequence) -> Dict:
+        active_user_indices = [ue.uid - 1 for ue in active_ues]
+        channel_gains = self._resource_allocation_channel_gains(active_ues)
+        weights = self._resource_allocation_weights(active_ues)
+        allocation = self.kkt_allocator.allocate(
+            active_user_indices=active_user_indices,
+            num_users=self.config.num_ues,
+            channel_gains=channel_gains,
+            weights=weights,
+        )
+        per_user = {}
+        assigned_rbs_map = {}
+        rates = []
+        mean_sinrs = []
+
+        for ue in active_ues:
+            user_idx = ue.uid - 1
+            user_bandwidth = float(allocation.bandwidth[user_idx])
+            user_power = float(allocation.power[user_idx])
+            if user_bandwidth <= 0.0 or user_power <= 0.0:
+                mean_sinr = 0.0
+                rate = 0.0
+            else:
+                gain = channel_gains[user_idx]
+                noise_power = self.ofdma_channel.noise_power_density * user_bandwidth
+                mean_sinr = (user_power * gain) / max(noise_power, 1e-12)
+                rate = user_bandwidth * math.log2(1.0 + mean_sinr)
+            per_user[ue.uid] = {
+                "rate": float(rate),
+                "mean_sinr": float(mean_sinr),
+                "assigned_rbs": [],
+                "bandwidth": float(user_bandwidth),
+                "power": float(user_power),
+            }
+            assigned_rbs_map[ue.uid] = []
+            rates.append(float(rate))
+            mean_sinrs.append(float(mean_sinr))
+
+        summary = self._summarize_resource_allocation(allocation)
+        return {
+            "rate": float(np.mean(rates)) if rates else 0.0,
+            "assigned_rbs": [],
+            "assigned_rbs_map": assigned_rbs_map,
+            "mean_sinr": float(np.mean(mean_sinrs)) if mean_sinrs else 0.0,
+            "covered_ues": len(active_ues),
+            "resource_allocation_mode": "kkt",
             "per_user": per_user,
             "selected_user_count": len(active_ues),
             **summary,
